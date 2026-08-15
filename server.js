@@ -9,9 +9,9 @@ const io = new Server(server, { cors: { origin: "*" } });
 const PORT = process.env.PORT || 10000;
 
 const CARD_VALUES = {
-    '7': 0, '8': 0, '9': 0, 'J': 2, 'Q': 3, 'K': 4, '10': 10, 'A': 11
+    '6': 0, '7': 0, '8': 0, '9': 0, 'J': 2, 'Q': 3, 'K': 4, '10': 10, 'A': 11
 };
-const RANKS_ORDER = ['7', '8', '9', 'J', 'Q', 'K', '10', 'A'];
+const RANKS_ORDER = ['6', '7', '8', '9', 'J', 'Q', 'K', '10', 'A'];
 const SUITS = ['spades', 'clubs', 'hearts', 'diamonds'];
 const TRUMP_ROTATION = ['spades', 'clubs', 'hearts', 'diamonds', 'no_trump'];
 
@@ -506,6 +506,8 @@ app.get('/', (req, res) => {
                 <select id="player-parties">
                     <option value="1">1 პარტია (5 ხელი)</option>
                     <option value="2">2 პარტია (10 ხელი)</option>
+                    <option value="3">3 პარტია (15 ხელი)</option>
+                    <option value="4">4 პარტია (20 ხელი)</option>
                 </select>
             </div>
             <button class="btn-action" onclick="showTablesLobby()">მაგიდის არჩევა ›</button>
@@ -514,23 +516,15 @@ app.get('/', (req, res) => {
 
     <div id="tables-lobby">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <h3 style="margin:0; color:#ffd700;">აირჩიეთ ფონი</h3>
+            <h3 style="margin:0; color:#ffd700;">აირჩიეთ ფსონი</h3>
         </div>
-        
-        <div class="table-item" onclick="joinSelectedTable(1)">
-            <div><div class="table-stake">1 $</div><div class="table-maxwin">მოგება: <b>1000 $</b></div></div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(2)">
-            <div><div class="table-stake">2 $</div><div class="table-maxwin">მოგება: <b>2000 $</b></div></div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <p id="lobby-wait-msg" style="display:none; text-align:center; color:#ffd700; font-weight:bold;"></p>
+        <div id="stake-list" style="display:flex; flex-direction:column; gap:14px; max-height:60vh; overflow-y:auto;"></div>
+        <p id="lobby-wait-msg" style="display:none; text-align:center; color:#ffd700; font-weight:bold; margin-top:15px;"></p>
     </div>
 
     <div id="game-container">
         <div class="top-bar">
-            <div class="info-badge">ფონი: <b>$<span id="table-stake-disp">1</span></b></div>
+            <div class="info-badge">ფსონი: <b>$<span id="table-stake-disp">1</span></b></div>
             <div class="info-badge">პარტია: <b id="party-num">1</b>/<span id="target-parties">1</span></div>
             <div class="info-badge">ხელი: <b id="hand-num">1</b></div>
             <div class="info-badge">კოზირი: <span id="trump-display">-</span></div>
@@ -580,6 +574,20 @@ app.get('/', (req, res) => {
         function showTablesLobby() {
             document.getElementById('config-modal').style.display = 'none';
             document.getElementById('tables-lobby').style.display = 'flex';
+            renderStakeList();
+        }
+
+        function renderStakeList() {
+            let stakes = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50];
+            let listDiv = document.getElementById('stake-list');
+            listDiv.innerHTML = '';
+            stakes.forEach(s => {
+                let item = document.createElement('div');
+                item.className = 'table-item';
+                item.onclick = () => joinSelectedTable(s);
+                item.innerHTML = '<div><div class="table-stake">' + s + ' $</div><div class="table-maxwin">მოგება: <b>' + (s * 1000) + ' $</b></div></div><div class="table-join-btn">›</div>';
+                listDiv.appendChild(item);
+            });
         }
 
         function joinSelectedTable(stake) {
