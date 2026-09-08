@@ -1,176 +1,730 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+
+const io = new Server(server, {
+    cors: {
+        origin: "*"
+    }
+});
 
 const PORT = process.env.PORT || 10000;
 
+app.use(express.json());
+
+/* =========================================================
+   USERS / REGISTRATION
+========================================================= */
+
+const USERS_FILE = path.join(__dirname, "users.json");
+
+let users = [];
+
+try {
+    if (fs.existsSync(USERS_FILE)) {
+        users = JSON.parse(
+            fs.readFileSync(USERS_FILE, "utf8")
+        );
+    }
+} catch (err) {
+    console.error("users.json read error:", err);
+    users = [];
+}
+
+function saveUsers() {
+    try {
+        fs.writeFileSync(
+            USERS_FILE,
+            JSON.stringify(users, null, 2)
+        );
+    } catch (err) {
+        console.error("users.json save error:", err);
+    }
+}
+
+function normalizeUsername(username) {
+    return String(username || "").trim();
+}
+
+function normalizeEmail(email) {
+    return String(email || "")
+        .trim()
+        .toLowerCase();
+}
+
+function hashPassword(password, salt) {
+    return crypto
+        .scryptSync(password, salt, 64)
+        .toString("hex");
+}
+
+function createToken() {
+    return crypto
+        .randomBytes(32)
+        .toString("hex");
+}
+
+const sessions = new Map();
+
+/* =========================================================
+   REGISTER
+========================================================= */
+
+app.post("/api/register", (req, res) => {
+
+    const username =
+        normalizeUsername(req.body.username);
+
+    const email =
+        normalizeEmail(req.body.email);
+
+    const password =
+        String(req.body.password || "");
+
+    if (
+        username.length < 3 ||
+        username.length > 20
+    ) {
+        return res.status(400).json({
+            ok: false,
+            message:
+                "Username უნდა იყოს 3-20 სიმბოლო."
+        });
+    }
+
+    if (
+        !/^[a-zA-Z0-9_\u10A0-\u10FF]+$/u.test(
+            username
+        )
+    ) {
+        return res.status(400).json({
+            ok: false,
+            message:
+                "Username-ში გამოიყენე ასოები, ციფრები ან _"
+        });
+    }
+
+    if (
+        !email ||
+        !email.includes("@")
+    ) {
+        return res.status(400).json({
+            ok: false,
+            message:
+                "შეიყვანე სწორი Email."
+        });
+    }
+
+    if (password.length < 6) {
+        return res.status(400).json({
+            ok: false,
+            message:
+                "პაროლი მინიმუმ 6 სიმბოლო უნდა იყოს."
+        });
+    }
+
+    const usernameExists =
+        users.some(
+            u =>
+                u.username.toLowerCase() ===
+                username.toLowerCase()
+        );
+
+    if (usernameExists) {
+        return res.status(409).json({
+            ok: false,
+            message:
+                "ეს Username უკვე დაკავებულია."
+        });
+    }
+
+    const emailExists =
+        users.some(
+            u =>
+                u.email === email
+        );
+
+    if (emailExists) {
+        return res.status(409).json({
+            ok: false,
+            message:
+                "ეს Email უკვე რეგისტრირებულია."
+        });
+    }
+
+    const salt =
+        crypto
+            .randomBytes(16)
+            .toString("hex");
+
+    const passwordHash =
+        hashPassword(password, salt);
+
+    const user = {
+        id:
+            "user_" +
+            Date.now() +
+            "_" +
+            Math.floor(
+                Math.random() * 100000
+            ),
+
+        username,
+        email,
+        salt,
+        passwordHash,
+
+        balance: 100,
+
+        createdAt:
+            new Date().toISOString()
+    };
+
+    users.push(user);
+
+    saveUsers();
+
+    const token =
+        createToken();
+
+    sessions.set(
+        token,
+        user.id
+    );
+
+    res.json({
+        ok: true,
+        token,
+        username:
+            user.username,
+
+        balance:
+            user.balance
+    });
+});
+
+/* =========================================================
+   LOGIN
+========================================================= */
+
+app.post("/api/login", (req, res) => {
+
+    const username =
+        normalizeUsername(
+            req.body.username
+        );
+
+    const password =
+        String(
+            req.body.password || ""
+        );
+
+    const user =
+        users.find(
+            u =>
+                u.username.toLowerCase() ===
+                username.toLowerCase()
+        );
+
+    if (!user) {
+        return res.status(401).json({
+            ok: false,
+            message:
+                "Username ან პაროლი არასწორია."
+        });
+    }
+
+    const passwordHash =
+        hashPassword(
+            password,
+            user.salt
+        );
+
+    if (
+        passwordHash !==
+        user.passwordHash
+    ) {
+        return res.status(401).json({
+            ok: false,
+            message:
+                "Username ან პაროლი არასწორია."
+        });
+    }
+
+    const token =
+        createToken();
+
+    sessions.set(
+        token,
+        user.id
+    );
+
+    res.json({
+        ok: true,
+        token,
+        username:
+            user.username,
+
+        balance:
+            user.balance
+    });
+});
+
+/* =========================================================
+   AUTH
+========================================================= */
+
+function getUserByToken(token) {
+
+    if (!token) {
+        return null;
+    }
+
+    const userId =
+        sessions.get(token);
+
+    if (!userId) {
+        return null;
+    }
+
+    return (
+        users.find(
+            u =>
+                u.id === userId
+        ) || null
+    );
+}
+
+/* =========================================================
+   GAME CONSTANTS
+
+   36 CARDS:
+   6 7 8 9 J Q K 10 A
+========================================================= */
+
 const CARD_VALUES = {
-    '7': 0, '8': 0, '9': 0, 'J': 2, 'Q': 3, 'K': 4, '10': 10, 'A': 11
+
+    "6": 0,
+
+    "7": 0,
+
+    "8": 0,
+
+    "9": 0,
+
+    "J": 2,
+
+    "Q": 3,
+
+    "K": 4,
+
+    "10": 10,
+
+    "A": 11
 };
 
-const RANKS_ORDER = ['7', '8', '9', 'J', 'Q', 'K', '10', 'A'];
-const SUITS = ['spades', 'clubs', 'hearts', 'diamonds'];
-const TRUMP_ROTATION = ['spades', 'clubs', 'hearts', 'diamonds', 'no_trump'];
+const RANKS_ORDER = [
+
+    "6",
+
+    "7",
+
+    "8",
+
+    "9",
+
+    "J",
+
+    "Q",
+
+    "K",
+
+    "10",
+
+    "A"
+];
+
+const SUITS = [
+
+    "spades",
+
+    "clubs",
+
+    "hearts",
+
+    "diamonds"
+];
+
+const TRUMP_ROTATION = [
+
+    "spades",
+
+    "clubs",
+
+    "hearts",
+
+    "diamonds",
+
+    "no_trump"
+];
+
+/* =========================================================
+   ROOMS
+========================================================= */
 
 let rooms = {};
 
+/* =========================================================
+   CREATE 36 CARD DECK
+========================================================= */
+
 function createDeck() {
+
     let deck = [];
 
-    for (let suit of SUITS) {
-        for (let rank of RANKS_ORDER) {
+    for (
+        const suit of SUITS
+    ) {
+
+        for (
+            const rank of RANKS_ORDER
+        ) {
+
             deck.push({
+
+                id:
+                    `${suit}_${rank}_${Math.random()}`,
+
                 rank,
+
                 suit,
-                value: CARD_VALUES[rank]
+
+                value:
+                    CARD_VALUES[rank]
             });
         }
     }
 
-    for (let i = deck.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [deck[i], deck[j]] = [deck[j], deck[i]];
+    /*
+        9 ranks x 4 suits = 36 cards
+    */
+
+    for (
+        let i =
+            deck.length - 1;
+
+        i > 0;
+
+        i--
+    ) {
+
+        const j =
+            Math.floor(
+                Math.random() *
+                (i + 1)
+            );
+
+        [
+            deck[i],
+            deck[j]
+        ] = [
+            deck[j],
+            deck[i]
+        ];
     }
 
     return deck;
 }
 
-function createRoom(roomId, maxPlayers, targetParties, stake) {
+/* =========================================================
+   CREATE ROOM
+========================================================= */
+
+function createRoom(
+    roomId,
+    maxPlayers,
+    targetParties,
+    stake
+) {
+
     return {
-        id: roomId,
-        maxPlayers: parseInt(maxPlayers),
-        targetParties: parseInt(targetParties),
-        stake: parseFloat(stake),
+
+        id:
+            roomId,
+
+        maxPlayers:
+            Number(maxPlayers),
+
+        targetParties:
+            Number(targetParties),
+
+        stake:
+            Number(stake),
+
         players: [],
-        gameState: null
+
+        gameState:
+            null
     };
 }
 
-function startNewHand(room, previousGame = null) {
-    let deck = createDeck();
-    let playersCards = {};
-    let takenCards = {};
-    let totalScores = {};
+/* =========================================================
+   START HAND
+========================================================= */
 
-    room.players.forEach((p) => {
-        playersCards[p.id] = deck.splice(0, 5);
-        takenCards[p.id] = [];
+function startNewHand(
+    room,
+    previousGame = null
+) {
 
-        totalScores[p.id] = previousGame
-            ? (previousGame.totalScores[p.id] || 0)
-            : 0;
-    });
+    const deck =
+        createDeck();
 
-    let handIndex = previousGame
-        ? previousGame.handIndex + 1
-        : 1;
+    const playersCards = {};
 
-    let partyNum = Math.ceil(handIndex / 5);
+    const takenCards = {};
 
-    let trumpIndex = (handIndex - 1) % 5;
-    let currentTrump = TRUMP_ROTATION[trumpIndex];
+    const totalScores = {};
 
-    let startLeaderIndex = 0;
+    room.players.forEach(
+        player => {
+
+            playersCards[
+                player.id
+            ] =
+                deck.splice(
+                    0,
+                    5
+                );
+
+            takenCards[
+                player.id
+            ] = [];
+
+            totalScores[
+                player.id
+            ] =
+                previousGame
+                    ?
+                    (
+                        previousGame
+                            .totalScores[
+                                player.id
+                            ] || 0
+                    )
+                    :
+                    0;
+        }
+    );
+
+    const handIndex =
+        previousGame
+            ?
+            previousGame.handIndex + 1
+            :
+            1;
+
+    const partyNum =
+        Math.ceil(
+            handIndex / 5
+        );
+
+    const trumpIndex =
+        (
+            handIndex - 1
+        ) % 5;
+
+    const currentTrump =
+        TRUMP_ROTATION[
+            trumpIndex
+        ];
+
+    let startLeaderIndex =
+        0;
 
     if (
         previousGame &&
-        previousGame.nextRoundLeaderIndex !== undefined
+        previousGame
+            .nextRoundLeaderIndex !==
+            undefined
     ) {
-        startLeaderIndex = previousGame.nextRoundLeaderIndex;
+
+        startLeaderIndex =
+            previousGame
+                .nextRoundLeaderIndex;
     }
 
-    let roundHistory = previousGame
-        ? previousGame.roundHistory
-        : [];
-
     return {
+
         deck,
+
         playersCards,
+
         takenCards,
+
         totalScores,
 
-        currentTurnIndex: startLeaderIndex,
+        currentTurnIndex:
+            startLeaderIndex,
 
         table: [],
 
-        trump: currentTrump,
+        trump:
+            currentTrump,
 
         partyNum,
+
         handIndex,
 
-        roundHistory,
+        roundHistory:
+            previousGame
+                ?
+                previousGame
+                    .roundHistory
+                :
+                [],
 
-        leadCardCount: null,
+        leadCardCount:
+            null,
 
-        isProcessing: false,
+        isProcessing:
+            false,
 
-        gameOver: false
+        gameOver:
+            false
     };
 }
 
-function cardBeatsCard(leadCard, challengeCard, trump) {
-    let isChallengeTrump =
-        trump !== 'no_trump' &&
-        challengeCard.suit === trump;
+/* =========================================================
+   CARD COMPARISON
+========================================================= */
 
-    let isLeadTrump =
-        trump !== 'no_trump' &&
-        leadCard.suit === trump;
+function cardBeatsCard(
+    leadCard,
+    challengeCard,
+    trump
+) {
 
-    if (isChallengeTrump && !isLeadTrump) {
+    const challengeTrump =
+        trump !== "no_trump" &&
+        challengeCard.suit ===
+        trump;
+
+    const leadTrump =
+        trump !== "no_trump" &&
+        leadCard.suit ===
+        trump;
+
+    if (
+        challengeTrump &&
+        !leadTrump
+    ) {
         return true;
     }
 
-    if (!isChallengeTrump && isLeadTrump) {
+    if (
+        !challengeTrump &&
+        leadTrump
+    ) {
         return false;
     }
 
-    if (challengeCard.suit === leadCard.suit) {
+    if (
+        challengeCard.suit ===
+        leadCard.suit
+    ) {
+
         return (
-            RANKS_ORDER.indexOf(challengeCard.rank) >
-            RANKS_ORDER.indexOf(leadCard.rank)
+            RANKS_ORDER.indexOf(
+                challengeCard.rank
+            )
+            >
+            RANKS_ORDER.indexOf(
+                leadCard.rank
+            )
         );
     }
 
     return false;
 }
 
-function beatsPlay(leadPlay, challengePlay, trump) {
-    let leadCards = leadPlay.cards;
-    let challengeCards = challengePlay.cards;
+/* =========================================================
+   PLAY COMPARISON
+========================================================= */
 
-    if (
+function beatsPlay(
+    leadPlay,
+    challengePlay,
+    trump
+) {
+
+    const leadCards =
+        leadPlay.cards;
+
+    const challengeCards =
+        challengePlay.cards;
+
+    const isMaliutka =
         challengeCards.length === 5 &&
         challengeCards.every(
-            c => c.suit === challengeCards[0].suit
-        )
+            card =>
+                card.suit ===
+                challengeCards[0].suit
+        );
+
+    if (
+        isMaliutka &&
+        leadCards.length < 5
     ) {
-        if (leadCards.length < 5) {
-            return true;
-        }
+        return true;
     }
 
-    if (leadCards.length !== challengeCards.length) {
+    if (
+        leadCards.length !==
+        challengeCards.length
+    ) {
         return false;
     }
 
-    let sortedLead = [...leadCards].sort(
-        (a, b) =>
-            RANKS_ORDER.indexOf(b.rank) -
-            RANKS_ORDER.indexOf(a.rank)
-    );
+    const sortedLead =
+        [...leadCards].sort(
+            (a, b) =>
+                RANKS_ORDER.indexOf(
+                    b.rank
+                )
+                -
+                RANKS_ORDER.indexOf(
+                    a.rank
+                )
+        );
 
-    let sortedChallenge = [...challengeCards].sort(
-        (a, b) =>
-            RANKS_ORDER.indexOf(b.rank) -
-            RANKS_ORDER.indexOf(a.rank)
-    );
+    const sortedChallenge =
+        [...challengeCards].sort(
+            (a, b) =>
+                RANKS_ORDER.indexOf(
+                    b.rank
+                )
+                -
+                RANKS_ORDER.indexOf(
+                    a.rank
+                )
+        );
 
-    for (let i = 0; i < sortedLead.length; i++) {
+    for (
+        let i = 0;
+
+        i <
+        sortedLead.length;
+
+        i++
+    ) {
+
         if (
             !cardBeatsCard(
                 sortedLead[i],
@@ -178,6 +732,7 @@ function beatsPlay(leadPlay, challengePlay, trump) {
                 trump
             )
         ) {
+
             return false;
         }
     }
@@ -185,816 +740,154 @@ function beatsPlay(leadPlay, challengePlay, trump) {
     return true;
 }
 
-function getWinningPlayIndex(table, trump) {
-    if (table.length === 0) {
+/* =========================================================
+   WINNING PLAY
+========================================================= */
+
+function getWinningPlayIndex(
+    table,
+    trump
+) {
+
+    if (
+        !table ||
+        table.length === 0
+    ) {
         return -1;
     }
 
-    let winningIdx = 0;
+    let winningIndex =
+        0;
 
-    for (let i = 1; i < table.length; i++) {
+    for (
+        let i = 1;
+
+        i <
+        table.length;
+
+        i++
+    ) {
+
         if (
             beatsPlay(
-                table[winningIdx],
+                table[
+                    winningIndex
+                ],
                 table[i],
                 trump
             )
         ) {
-            winningIdx = i;
+
+            winningIndex =
+                i;
         }
     }
 
-    return winningIdx;
+    return winningIndex;
 }
 
-io.on('connection', (socket) => {
+/* =========================================================
+   PERSONAL GAME STATE
+========================================================= */
 
-    socket.on(
-        'joinTable',
-        ({ name, capacity, parties, stake }) => {
-
-            let maxP = parseInt(capacity) || 2;
-
-            let targetParties =
-                parseInt(parties) || 1;
-
-            let tableStake =
-                parseFloat(stake) || 1;
-
-            let playerName =
-                String(name || '').trim() ||
-                'მოთამაშე';
-
-            let availableRoom =
-                Object.values(rooms).find(r =>
-                    r.maxPlayers === maxP &&
-                    r.targetParties === targetParties &&
-                    r.stake === tableStake &&
-                    r.players.length < maxP &&
-                    !r.gameState
-                );
-
-            if (!availableRoom) {
-
-                let roomId =
-                    'room_' +
-                    Date.now() +
-                    '_' +
-                    Math.floor(Math.random() * 1000);
-
-                availableRoom = createRoom(
-                    roomId,
-                    maxP,
-                    targetParties,
-                    tableStake
-                );
-
-                rooms[roomId] = availableRoom;
-            }
-
-            socket.roomId = availableRoom.id;
-
-            let isTester =
-                playerName === 'საბა123';
-
-            availableRoom.players.push({
-                id: socket.id,
-                name: playerName,
-                balance: 100 - tableStake,
-                isTester: isTester
-            });
-
-            socket.join(availableRoom.id);
-
-            /*
-             * TESTER MODE
-             *
-             * საბა123-ს ავტომატურად ვუსვამთ ბოტებს,
-             * რათა თამაშის დიზაინი/ლოგიკა მარტივად დატესტოს.
-             */
-            if (isTester) {
-
-                let botCount = 1;
-
-                while (
-                    availableRoom.players.length <
-                    availableRoom.maxPlayers
-                ) {
-
-                    let botId =
-                        'bot_' +
-                        botCount +
-                        '_' +
-                        Date.now();
-
-                    availableRoom.players.push({
-                        id: botId,
-                        name: 'ბოტი ' + botCount,
-                        balance: 100,
-                        isTester: false,
-                        isBot: true
-                    });
-
-                    botCount++;
-                }
-            }
-
-            if (
-                availableRoom.players.length ===
-                availableRoom.maxPlayers
-            ) {
-
-                availableRoom.gameState =
-                    startNewHand(availableRoom);
-
-                io.to(availableRoom.id).emit(
-                    'gameStateUpdate',
-                    getClientGameState(availableRoom)
-                );
-
-            } else {
-
-                io.to(availableRoom.id).emit(
-                    'waitingForPlayers',
-                    {
-                        current:
-                            availableRoom.players.length,
-
-                        max:
-                            availableRoom.maxPlayers
-                    }
-                );
-            }
-        }
-    );
-
-    socket.on(
-        'switchControlledPlayer',
-        ({ targetPlayerId }) => {
-
-            if (
-                !socket.roomId ||
-                !rooms[socket.roomId]
-            ) {
-                return;
-            }
-
-            let room =
-                rooms[socket.roomId];
-
-            let sender =
-                room.players.find(
-                    p => p.id === socket.id
-                );
-
-            if (
-                sender &&
-                sender.isTester &&
-                room.gameState
-            ) {
-
-                socket.emit(
-                    'gameStateUpdate',
-                    getClientGameState(
-                        room,
-                        targetPlayerId
-                    )
-                );
-            }
-        }
-    );
-
-    socket.on(
-        'playCards',
-        ({ cardIndices, targetPlayerId }) => {
-
-            if (
-                !socket.roomId ||
-                !rooms[socket.roomId]
-            ) {
-                return;
-            }
-
-            let room =
-                rooms[socket.roomId];
-
-            let gs =
-                room.gameState;
-
-            if (
-                !gs ||
-                gs.isProcessing ||
-                gs.gameOver
-            ) {
-                return;
-            }
-
-            let activePlayer =
-                room.players[
-                    gs.currentTurnIndex
-                ];
-
-            let senderPlayer =
-                room.players.find(
-                    p => p.id === socket.id
-                );
-
-            if (!activePlayer) {
-                return;
-            }
-
-            let actingPlayerId =
-                activePlayer.id;
-
-            /*
-             * Tester can control any player,
-             * but only when it is actually that player's turn.
-             */
-            if (
-                senderPlayer &&
-                senderPlayer.isTester &&
-                targetPlayerId
-            ) {
-
-                if (
-                    targetPlayerId !==
-                    activePlayer.id
-                ) {
-
-                    socket.emit(
-                        'errorMessage',
-                        'ახლა ' +
-                        activePlayer.name +
-                        '-ის სვლაა! გადართეთ მასზე.'
-                    );
-
-                    return;
-                }
-
-                actingPlayerId =
-                    targetPlayerId;
-
-            } else if (
-                activePlayer.id !== socket.id
-            ) {
-                return;
-            }
-
-            let playerCards =
-                gs.playersCards[
-                    actingPlayerId
-                ];
-
-            if (!playerCards) {
-                return;
-            }
-
-            if (!Array.isArray(cardIndices)) {
-                return;
-            }
-
-            let selectedCards =
-                cardIndices
-                    .map(i => playerCards[i])
-                    .filter(Boolean);
-
-            if (
-                selectedCards.length === 0 ||
-                selectedCards.length !==
-                cardIndices.length
-            ) {
-                return;
-            }
-
-            let isMaliutka =
-                selectedCards.length === 5 &&
-                selectedCards.every(
-                    c =>
-                        c.suit ===
-                        selectedCards[0].suit
-                );
-
-            /*
-             * FIRST PLAYER
-             */
-            if (gs.table.length === 0) {
-
-                let firstSuit =
-                    selectedCards[0].suit;
-
-                let isSameSuit =
-                    selectedCards.every(
-                        c =>
-                            c.suit ===
-                            firstSuit
-                    );
-
-                if (!isSameSuit) {
-
-                    socket.emit(
-                        'errorMessage',
-                        'ჩამომსვლელს შეუძლია მხოლოდ ერთი ცვეტის კარტების დადება!'
-                    );
-
-                    return;
-                }
-
-                gs.leadCardCount =
-                    selectedCards.length;
-
-                gs.playersCards[
-                    actingPlayerId
-                ] =
-                    playerCards.filter(
-                        (_, i) =>
-                            !cardIndices.includes(i)
-                    );
-
-                let player =
-                    room.players.find(
-                        p =>
-                            p.id ===
-                            actingPlayerId
-                    );
-
-                gs.table.push({
-                    playerId:
-                        actingPlayerId,
-
-                    playerName:
-                        player
-                            ? player.name
-                            : 'მოთამაშე',
-
-                    cards:
-                        selectedCards
-                });
-
-                gs.currentTurnIndex =
-                    (
-                        gs.currentTurnIndex + 1
-                    ) %
-                    room.players.length;
-
-                broadcastGameState(room);
-
-            } else {
-
-                /*
-                 * NORMAL PLAY
-                 */
-                if (
-                    !isMaliutka &&
-                    selectedCards.length !==
-                    gs.leadCardCount
-                ) {
-
-                    socket.emit(
-                        'errorMessage',
-                        'უნდა ჩამოხვიდეთ ზუსტად ' +
-                        gs.leadCardCount +
-                        ' კარტი (ან მალიუტკა)!'
-                    );
-
-                    return;
-                }
-
-                if (isMaliutka) {
-                    gs.leadCardCount = 5;
-                }
-
-                gs.playersCards[
-                    actingPlayerId
-                ] =
-                    playerCards.filter(
-                        (_, i) =>
-                            !cardIndices.includes(i)
-                    );
-
-                let player =
-                    room.players.find(
-                        p =>
-                            p.id ===
-                            actingPlayerId
-                    );
-
-                gs.table.push({
-                    playerId:
-                        actingPlayerId,
-
-                    playerName:
-                        player
-                            ? player.name
-                            : 'მოთამაშე',
-
-                    cards:
-                        selectedCards
-                });
-
-                /*
-                 * Not everyone has played yet.
-                 */
-                if (
-                    gs.table.length <
-                    room.players.length
-                ) {
-
-                    gs.currentTurnIndex =
-                        (
-                            gs.currentTurnIndex + 1
-                        ) %
-                        room.players.length;
-
-                    broadcastGameState(room);
-
-                } else {
-
-                    /*
-                     * Determine winner.
-                     */
-                    let winIdx =
-                        getWinningPlayIndex(
-                            gs.table,
-                            gs.trump
-                        );
-
-                    let winningPlay =
-                        gs.table[winIdx];
-
-                    let winnerId =
-                        winningPlay.playerId;
-
-                    let allTableCards = [];
-
-                    gs.table.forEach(
-                        p =>
-                            allTableCards.push(
-                                ...p.cards
-                            )
-                    );
-
-                    gs.takenCards[
-                        winnerId
-                    ].push(
-                        ...allTableCards
-                    );
-
-                    let winnerIndex =
-                        room.players.findIndex(
-                            p =>
-                                p.id ===
-                                winnerId
-                        );
-
-                    gs.currentTurnIndex =
-                        winnerIndex;
-
-                    gs.isProcessing =
-                        true;
-
-                    broadcastGameState(room);
-
-                    setTimeout(() => {
-
-                        gs.table = [];
-
-                        gs.leadCardCount =
-                            null;
-
-                        /*
-                         * Deal cards until every player
-                         * has up to five cards.
-                         */
-                        while (
-                            gs.deck.length > 0
-                        ) {
-
-                            let anyPlayerNeedsCard =
-                                room.players.some(
-                                    p =>
-                                        gs.playersCards[
-                                            p.id
-                                        ].length < 5
-                                );
-
-                            if (
-                                !anyPlayerNeedsCard
-                            ) {
-                                break;
-                            }
-
-                            for (
-                                let step = 0;
-                                step <
-                                room.players.length;
-                                step++
-                            ) {
-
-                                let pIdx =
-                                    (
-                                        winnerIndex +
-                                        step
-                                    ) %
-                                    room.players.length;
-
-                                let pId =
-                                    room.players[
-                                        pIdx
-                                    ].id;
-
-                                if (
-                                    gs.playersCards[
-                                        pId
-                                    ].length < 5 &&
-                                    gs.deck.length > 0
-                                ) {
-
-                                    gs.playersCards[
-                                        pId
-                                    ].push(
-                                        gs.deck.pop()
-                                    );
-                                }
-                            }
-                        }
-
-                        let allHandsEmpty =
-                            room.players.every(
-                                p =>
-                                    gs.playersCards[
-                                        p.id
-                                    ].length === 0
-                            );
-
-                        gs.isProcessing =
-                            false;
-
-                        if (allHandsEmpty) {
-                            finishHand(room);
-                        } else {
-                            broadcastGameState(room);
-                        }
-
-                    }, 2000);
-                }
-            }
-        }
-    );
-
-    socket.on('disconnect', () => {
-
-        if (
-            socket.roomId &&
-            rooms[socket.roomId]
-        ) {
-
-            let room =
-                rooms[socket.roomId];
-
-            room.players =
-                room.players.filter(
-                    p =>
-                        p.id !== socket.id
-                );
-
-            io.to(room.id).emit(
-                'playerLeft'
-            );
-
-            delete rooms[
-                socket.roomId
-            ];
-        }
-    });
-});
-
-function broadcastGameState(room) {
-
-    room.players.forEach(p => {
-
-        /*
-         * Bots don't have sockets.
-         */
-        if (p.id.startsWith('bot_')) {
-            return;
-        }
-
-        io.to(p.id).emit(
-            'gameStateUpdate',
-            getClientGameState(
-                room,
-                p.id
-            )
-        );
-    });
-}
-
-function finishHand(room) {
-
-    let gs =
-        room.gameState;
-
-    let handScores = {};
-
-    let minScore =
-        Infinity;
-
-    let minPlayerIndex =
-        0;
-
-    room.players.forEach(
-        (p, idx) => {
-
-            let pts =
-                gs.takenCards[
-                    p.id
-                ].reduce(
-                    (sum, c) =>
-                        sum + c.value,
-                    0
-                );
-
-            handScores[p.id] =
-                pts;
-
-            gs.totalScores[p.id] =
-                (
-                    gs.totalScores[p.id] ||
-                    0
-                ) +
-                (
-                    pts === 0
-                        ? -120
-                        : pts
-                );
-
-            if (pts < minScore) {
-
-                minScore =
-                    pts;
-
-                minPlayerIndex =
-                    idx;
-            }
-        }
-    );
-
-    gs.roundHistory.push({
-        handIndex:
-            gs.handIndex,
-
-        trump:
-            gs.trump,
-
-        scores:
-            handScores
-    });
-
-    let totalMaxHands =
-        room.targetParties * 5;
-
-    if (
-        gs.handIndex >=
-        totalMaxHands
-    ) {
-
-        gs.gameOver =
-            true;
-
-        let sorted =
-            [...room.players].sort(
-                (a, b) =>
-                    (
-                        gs.totalScores[b.id] ||
-                        0
-                    ) -
-                    (
-                        gs.totalScores[a.id] ||
-                        0
-                    )
-            );
-
-        let winner =
-            sorted[0];
-
-        let totalPrize =
-            room.stake *
-            room.players.length;
-
-        winner.balance +=
-            totalPrize;
-
-        broadcastGameState(room);
-
-    } else {
-
-        let nextLeaderIndex =
-            (
-                minPlayerIndex + 1
-            ) %
-            room.players.length;
-
-        gs.nextRoundLeaderIndex =
-            nextLeaderIndex;
-
-        room.gameState =
-            startNewHand(
-                room,
-                gs
-            );
-
-        broadcastGameState(room);
-    }
-}
-
-/*
- * IMPORTANT:
- *
- * Normal players receive only their own cards.
- *
- * Tester "საბა123" can see all cards
- * because this is needed for testing.
- */
 function getClientGameState(
     room,
     forPlayerId
 ) {
 
-    let gs =
+    const gs =
         room.gameState;
 
-    let winningIndex =
+    if (!gs) {
+        return null;
+    }
+
+    const winningIndex =
         getWinningPlayIndex(
             gs.table,
             gs.trump
         );
 
-    let viewer =
-        room.players.find(
-            p =>
-                p.id ===
-                forPlayerId
-        );
-
-    let isTester =
-        !!(
-            viewer &&
-            viewer.isTester
-        );
-
-    let playersSummary =
+    const players =
         room.players.map(
-            (p, idx) => ({
+            (
+                player,
+                index
+            ) => {
 
-                id:
-                    p.id,
+                return {
 
-                name:
-                    p.name,
+                    id:
+                        player.id,
 
-                balance:
-                    p.balance,
+                    name:
+                        player.name,
 
-                isTester:
-                    p.isTester,
+                    balance:
+                        player.balance,
 
-                cardCount:
-                    gs.playersCards[p.id]
-                        ? gs.playersCards[p.id].length
-                        : 0,
+                    cardCount:
+                        gs.playersCards[
+                            player.id
+                        ]
+                            ?
+                            gs.playersCards[
+                                player.id
+                            ].length
+                            :
+                            0,
 
-                takenCount:
-                    gs.takenCards[p.id]
-                        ? gs.takenCards[p.id].length
-                        : 0,
+                    takenCount:
+                        gs.takenCards[
+                            player.id
+                        ]
+                            ?
+                            gs.takenCards[
+                                player.id
+                            ].length
+                            :
+                            0,
 
-                handPoints:
-                    gs.takenCards[p.id]
-                        ? gs.takenCards[p.id].reduce(
-                            (a, b) =>
-                                a + b.value,
-                            0
-                        )
-                        : 0,
+                    handPoints:
+                        gs.takenCards[
+                            player.id
+                        ]
+                            ?
+                            gs.takenCards[
+                                player.id
+                            ].reduce(
+                                (
+                                    sum,
+                                    card
+                                ) =>
+                                    sum +
+                                    card.value,
+                                0
+                            )
+                            :
+                            0,
 
-                totalPoints:
-                    gs.totalScores[p.id] ||
-                    0,
+                    totalPoints:
+                        gs.totalScores[
+                            player.id
+                        ] || 0,
 
-                isCurrent:
-                    idx ===
-                    gs.currentTurnIndex
-            })
+                    isCurrent:
+                        index ===
+                        gs.currentTurnIndex
+                };
+            }
         );
 
-    let visibleCards = {};
+    const visibleCards = {};
 
-    if (isTester) {
+    /*
+        IMPORTANT:
+        მხოლოდ თავისი კარტები
+        ეგზავნება მოთამაშეს.
+    */
 
-        visibleCards =
-            gs.playersCards;
-
-    } else if (
+    if (
         forPlayerId &&
         gs.playersCards[
             forPlayerId
@@ -1013,12 +906,15 @@ function getClientGameState(
 
         table:
             gs.table.map(
-                (play, idx) => ({
+                (
+                    play,
+                    index
+                ) => ({
 
                     ...play,
 
                     isWinning:
-                        idx ===
+                        index ===
                         winningIndex
                 })
             ),
@@ -1038,8 +934,7 @@ function getClientGameState(
         stake:
             room.stake,
 
-        players:
-            playersSummary,
+        players,
 
         playersCards:
             visibleCards,
@@ -1064,11 +959,854 @@ function getClientGameState(
     };
 }
 
-app.get('/', (req, res) => {
+/* =========================================================
+   BROADCAST PERSONAL STATE
 
-    res.send(`
+   THIS FIXES INVISIBLE CARDS
+========================================================= */
+
+function broadcastGameState(
+    room
+) {
+
+    room.players.forEach(
+        player => {
+
+            if (
+                player.isBot
+            ) {
+                return;
+            }
+
+            io.to(
+                player.id
+            ).emit(
+                "gameStateUpdate",
+                getClientGameState(
+                    room,
+                    player.id
+                )
+            );
+        }
+    );
+}
+
+/* =========================================================
+   FINISH HAND
+========================================================= */
+
+function finishHand(
+    room
+) {
+
+    const gs =
+        room.gameState;
+
+    const handScores = {};
+
+    let minScore =
+        Infinity;
+
+    let minPlayerIndex =
+        0;
+
+    room.players.forEach(
+        (
+            player,
+            index
+        ) => {
+
+            const points =
+                gs.takenCards[
+                    player.id
+                ].reduce(
+                    (
+                        sum,
+                        card
+                    ) =>
+                        sum +
+                        card.value,
+                    0
+                );
+
+            handScores[
+                player.id
+            ] =
+                points;
+
+            gs.totalScores[
+                player.id
+            ] =
+                (
+                    gs.totalScores[
+                        player.id
+                    ] || 0
+                )
+                +
+                (
+                    points === 0
+                        ?
+                        -120
+                        :
+                        points
+                );
+
+            if (
+                points <
+                minScore
+            ) {
+
+                minScore =
+                    points;
+
+                minPlayerIndex =
+                    index;
+            }
+        }
+    );
+
+    gs.roundHistory.push({
+
+        handIndex:
+            gs.handIndex,
+
+        trump:
+            gs.trump,
+
+        scores:
+            handScores
+    });
+
+    const totalMaxHands =
+        room.targetParties *
+        5;
+
+    if (
+        gs.handIndex >=
+        totalMaxHands
+    ) {
+
+        gs.gameOver =
+            true;
+
+        broadcastGameState(
+            room
+        );
+
+        return;
+    }
+
+    const nextLeaderIndex =
+        (
+            minPlayerIndex + 1
+        ) %
+        room.players.length;
+
+    gs.nextRoundLeaderIndex =
+        nextLeaderIndex;
+
+    room.gameState =
+        startNewHand(
+            room,
+            gs
+        );
+
+    broadcastGameState(
+        room
+    );
+}
+
+/* =========================================================
+   SOCKET.IO
+========================================================= */
+
+io.on(
+    "connection",
+    socket => {
+
+        console.log(
+            "connected:",
+            socket.id
+        );
+
+        /* =================================================
+           JOIN TABLE
+        ================================================= */
+
+        socket.on(
+            "joinTable",
+            data => {
+
+                const user =
+                    getUserByToken(
+                        data.token
+                    );
+
+                if (!user) {
+
+                    socket.emit(
+                        "errorMessage",
+                        "ჯერ გაიარე რეგისტრაცია ან შედი ანგარიშზე."
+                    );
+
+                    return;
+                }
+
+                const capacity =
+                    Math.max(
+                        2,
+                        Math.min(
+                            6,
+                            parseInt(
+                                data.capacity
+                            ) || 2
+                        )
+                    );
+
+                const parties =
+                    Math.max(
+                        1,
+                        parseInt(
+                            data.parties
+                        ) || 1
+                    );
+
+                const stake =
+                    Math.max(
+                        0,
+                        parseFloat(
+                            data.stake
+                        ) || 1
+                    );
+
+                if (
+                    user.balance <
+                    stake
+                ) {
+
+                    socket.emit(
+                        "errorMessage",
+                        "არ გაქვს საკმარისი ბალანსი."
+                    );
+
+                    return;
+                }
+
+                /*
+                    ერთი socket ერთ მაგიდაზე.
+                */
+
+                if (
+                    socket.roomId
+                ) {
+                    return;
+                }
+
+                let room =
+                    Object.values(
+                        rooms
+                    ).find(
+                        r =>
+                            r.maxPlayers ===
+                            capacity
+                            &&
+                            r.targetParties ===
+                            parties
+                            &&
+                            r.stake ===
+                            stake
+                            &&
+                            r.players.length <
+                            r.maxPlayers
+                            &&
+                            !r.gameState
+                    );
+
+                if (!room) {
+
+                    const roomId =
+                        "room_" +
+                        Date.now() +
+                        "_" +
+                        Math.floor(
+                            Math.random() *
+                            100000
+                        );
+
+                    room =
+                        createRoom(
+                            roomId,
+                            capacity,
+                            parties,
+                            stake
+                        );
+
+                    rooms[
+                        roomId
+                    ] =
+                        room;
+                }
+
+                /*
+                    ერთი username ორჯერ
+                    ერთ ოთახში არ მოხვდეს.
+                */
+
+                const alreadyInRoom =
+                    room.players.some(
+                        p =>
+                            p.userId ===
+                            user.id
+                    );
+
+                if (
+                    alreadyInRoom
+                ) {
+
+                    socket.emit(
+                        "errorMessage",
+                        "ეს მომხმარებელი უკვე მაგიდაზეა."
+                    );
+
+                    return;
+                }
+
+                socket.roomId =
+                    room.id;
+
+                socket.userId =
+                    user.id;
+
+                socket.join(
+                    room.id
+                );
+
+                user.balance -=
+                    stake;
+
+                saveUsers();
+
+                room.players.push({
+
+                    id:
+                        socket.id,
+
+                    userId:
+                        user.id,
+
+                    name:
+                        user.username,
+
+                    balance:
+                        user.balance,
+
+                    isBot:
+                        false
+                });
+
+                /*
+                    როცა მაგიდა შეივსება
+                    თამაში ავტომატურად იწყება.
+                */
+
+                if (
+                    room.players.length ===
+                    room.maxPlayers
+                ) {
+
+                    room.gameState =
+                        startNewHand(
+                            room
+                        );
+
+                    /*
+                        IMPORTANT FIX:
+                        ყველა მოთამაშეს პირადად
+                        თავისი კარტები ეგზავნება.
+                    */
+
+                    broadcastGameState(
+                        room
+                    );
+
+                } else {
+
+                    io.to(
+                        room.id
+                    ).emit(
+                        "waitingForPlayers",
+                        {
+
+                            current:
+                                room.players
+                                    .length,
+
+                            max:
+                                room.maxPlayers
+                        }
+                    );
+                }
+            }
+        );
+
+        /* =================================================
+           PLAY CARDS
+        ================================================= */
+
+        socket.on(
+            "playCards",
+            data => {
+
+                if (
+                    !socket.roomId
+                    ||
+                    !rooms[
+                        socket.roomId
+                    ]
+                ) {
+                    return;
+                }
+
+                const room =
+                    rooms[
+                        socket.roomId
+                    ];
+
+                const gs =
+                    room.gameState;
+
+                if (
+                    !gs
+                    ||
+                    gs.isProcessing
+                    ||
+                    gs.gameOver
+                ) {
+                    return;
+                }
+
+                const activePlayer =
+                    room.players[
+                        gs.currentTurnIndex
+                    ];
+
+                if (
+                    !activePlayer
+                    ||
+                    activePlayer.id !==
+                    socket.id
+                ) {
+
+                    socket.emit(
+                        "errorMessage",
+                        "ახლა შენი სვლა არ არის."
+                    );
+
+                    return;
+                }
+
+                const playerCards =
+                    gs.playersCards[
+                        socket.id
+                    ];
+
+                if (
+                    !playerCards
+                ) {
+                    return;
+                }
+
+                const cardIndices =
+                    Array.isArray(
+                        data.cardIndices
+                    )
+                        ?
+                        [...new Set(
+                            data.cardIndices
+                        )]
+                        :
+                        [];
+
+                const selectedCards =
+                    cardIndices
+                        .map(
+                            index =>
+                                playerCards[
+                                    index
+                                ]
+                        )
+                        .filter(Boolean);
+
+                if (
+                    selectedCards.length ===
+                    0
+                    ||
+                    selectedCards.length !==
+                    cardIndices.length
+                ) {
+
+                    socket.emit(
+                        "errorMessage",
+                        "აირჩიე კარტი."
+                    );
+
+                    return;
+                }
+
+                const isMaliutka =
+                    selectedCards.length ===
+                    5
+                    &&
+                    selectedCards.every(
+                        card =>
+                            card.suit ===
+                            selectedCards[
+                                0
+                            ].suit
+                    );
+
+                /*
+                    პირველი მოთამაშე.
+                */
+
+                if (
+                    gs.table.length ===
+                    0
+                ) {
+
+                    const firstSuit =
+                        selectedCards[
+                            0
+                        ].suit;
+
+                    const sameSuit =
+                        selectedCards.every(
+                            card =>
+                                card.suit ===
+                                firstSuit
+                        );
+
+                    if (
+                        !sameSuit
+                    ) {
+
+                        socket.emit(
+                            "errorMessage",
+                            "პირველმა მოთამაშემ ერთი ფერის კარტები უნდა ჩამოვიდეს."
+                        );
+
+                        return;
+                    }
+
+                    gs.leadCardCount =
+                        selectedCards.length;
+
+                } else {
+
+                    if (
+                        !isMaliutka
+                        &&
+                        selectedCards.length !==
+                        gs.leadCardCount
+                    ) {
+
+                        socket.emit(
+                            "errorMessage",
+                            `უნდა ჩამოხვიდე ${gs.leadCardCount} კარტი ან მალიუტკა.`
+                        );
+
+                        return;
+                    }
+                }
+
+                /*
+                    Remove selected cards.
+                */
+
+                gs.playersCards[
+                    socket.id
+                ] =
+                    playerCards.filter(
+                        (
+                            card,
+                            index
+                        ) =>
+                            !cardIndices.includes(
+                                index
+                            )
+                    );
+
+                gs.table.push({
+
+                    playerId:
+                        socket.id,
+
+                    playerName:
+                        activePlayer.name,
+
+                    cards:
+                        selectedCards
+                });
+
+                /*
+                    Next player
+                */
+
+                if (
+                    gs.table.length <
+                    room.players.length
+                ) {
+
+                    gs.currentTurnIndex =
+                        (
+                            gs.currentTurnIndex +
+                            1
+                        )
+                        %
+                        room.players.length;
+
+                    broadcastGameState(
+                        room
+                    );
+
+                    return;
+                }
+
+                /*
+                    Round complete
+                */
+
+                const winningIndex =
+                    getWinningPlayIndex(
+                        gs.table,
+                        gs.trump
+                    );
+
+                const winningPlay =
+                    gs.table[
+                        winningIndex
+                    ];
+
+                if (
+                    !winningPlay
+                ) {
+                    return;
+                }
+
+                const winnerId =
+                    winningPlay
+                        .playerId;
+
+                const tableCards =
+                    [];
+
+                gs.table.forEach(
+                    play =>
+                        tableCards.push(
+                            ...play.cards
+                        )
+                );
+
+                gs.takenCards[
+                    winnerId
+                ].push(
+                    ...tableCards
+                );
+
+                const winnerIndex =
+                    room.players
+                        .findIndex(
+                            player =>
+                                player.id ===
+                                winnerId
+                        );
+
+                gs.currentTurnIndex =
+                    winnerIndex;
+
+                gs.isProcessing =
+                    true;
+
+                broadcastGameState(
+                    room
+                );
+
+                setTimeout(
+                    () => {
+
+                        gs.table = [];
+
+                        gs.leadCardCount =
+                            null;
+
+                        /*
+                            ხელში ისევ მაქსიმუმ
+                            5 კარტი.
+                        */
+
+                        while (
+                            gs.deck.length >
+                            0
+                        ) {
+
+                            let needCards =
+                                false;
+
+                            for (
+                                let step = 0;
+
+                                step <
+                                room.players
+                                    .length;
+
+                                step++
+                            ) {
+
+                                const playerIndex =
+                                    (
+                                        winnerIndex +
+                                        step
+                                    )
+                                    %
+                                    room.players
+                                        .length;
+
+                                const player =
+                                    room.players[
+                                        playerIndex
+                                    ];
+
+                                const hand =
+                                    gs.playersCards[
+                                        player.id
+                                    ];
+
+                                if (
+                                    hand.length <
+                                    5
+                                    &&
+                                    gs.deck.length >
+                                    0
+                                ) {
+
+                                    hand.push(
+                                        gs.deck.pop()
+                                    );
+
+                                    needCards =
+                                        true;
+                                }
+                            }
+
+                            if (
+                                !needCards
+                            ) {
+                                break;
+                            }
+                        }
+
+                        const allHandsEmpty =
+                            room.players.every(
+                                player =>
+                                    gs.playersCards[
+                                        player.id
+                                    ].length ===
+                                    0
+                            );
+
+                        gs.isProcessing =
+                            false;
+
+                        if (
+                            allHandsEmpty
+                        ) {
+
+                            finishHand(
+                                room
+                            );
+
+                        } else {
+
+                            broadcastGameState(
+                                room
+                            );
+                        }
+
+                    },
+                    1200
+                );
+            }
+        );
+
+        /* =================================================
+           DISCONNECT
+        ================================================= */
+
+        socket.on(
+            "disconnect",
+            () => {
+
+                const roomId =
+                    socket.roomId;
+
+                if (
+                    !roomId
+                    ||
+                    !rooms[
+                        roomId
+                    ]
+                ) {
+                    return;
+                }
+
+                const room =
+                    rooms[
+                        roomId
+                    ];
+
+                room.players =
+                    room.players.filter(
+                        player =>
+                            player.id !==
+                            socket.id
+                    );
+
+                io.to(
+                    room.id
+                ).emit(
+                    "playerLeft"
+                );
+
+                /*
+                    თუ თამაში ჯერ არ იყო
+                    დაწყებული ოთახი დარჩეს,
+                    თუ ცარიელია წაიშალოს.
+                */
+
+                if (
+                    room.players.length ===
+                    0
+                ) {
+
+                    delete rooms[
+                        roomId
+                    ];
+                }
+            }
+        );
+    }
+);
+
+/* =========================================================
+   FRONTEND
+========================================================= */
+
+app.get(
+    "/",
+    (req, res) => {
+
+        res.send(`
 <!DOCTYPE html>
-
 <html lang="ka">
 
 <head>
@@ -1078,7 +1816,7 @@ app.get('/', (req, res) => {
 <meta
     name="viewport"
     content="width=device-width, initial-scale=1.0"
->
+/>
 
 <title>BURA VIP CLUB</title>
 
@@ -1087,148 +1825,78 @@ app.get('/', (req, res) => {
 <style>
 
 /* =========================================================
-   GLOBAL
+   ROOT
 ========================================================= */
 
 * {
     box-sizing: border-box;
-    font-family:
-        Inter,
-        Segoe UI,
-        system-ui,
-        -apple-system,
-        sans-serif;
 }
 
 :root {
-
-    --bg:
-        #08090d;
-
-    --panel:
-        #101217;
-
-    --panel2:
-        #151820;
-
-    --gold:
-        #f4c542;
-
-    --gold2:
-        #ff9d00;
-
-    --muted:
-        #8e96a8;
-
-    --line:
-        rgba(255,255,255,.08);
-
-    --green:
-        #16743f;
-
-    --green2:
-        #0b4e2c;
+    --bg: #07090d;
+    --panel: #11151c;
+    --panel2: #181d26;
+    --gold: #f4c542;
+    --gold2: #ff9800;
+    --green: #0c6b3b;
+    --green2: #073b23;
+    --text: #ffffff;
+    --muted: #8993a4;
+    --red: #e04d4d;
+    --line: rgba(255,255,255,.08);
 }
 
 html,
 body {
-
+    padding: 0;
     margin: 0;
-
     min-height: 100%;
-
-    background:
-
-        radial-gradient(
-            circle at 50% 0%,
-            rgba(79,48,10,.22),
-            transparent 32%
-        ),
-
-        radial-gradient(
-            circle at 10% 90%,
-            rgba(28,91,55,.16),
-            transparent 35%
-        ),
-
-        var(--bg);
-
-    color:
-        #fff;
 }
 
 body {
+    min-height: 100vh;
 
-    min-height:
-        100vh;
+    background:
+        radial-gradient(
+            circle at 50% 0,
+            rgba(244,197,66,.10),
+            transparent 30%
+        ),
+        #07090d;
+
+    color: white;
+
+    font-family:
+        Inter,
+        Segoe UI,
+        Arial,
+        sans-serif;
 }
 
 button,
 input,
 select {
-
-    font:
-        inherit;
+    font: inherit;
 }
 
 button {
-
-    cursor:
-        pointer;
+    cursor: pointer;
 }
 
 .hidden {
-
-    display:
-        none !important;
+    display: none !important;
 }
 
 /* =========================================================
-   LOBBY / HOME
-========================================================= */
-
-#lobby {
-
-    min-height:
-        100vh;
-
-    display:
-        flex;
-
-    flex-direction:
-        column;
-
-    background:
-
-        linear-gradient(
-            rgba(8,9,13,.72),
-            rgba(8,9,13,.96)
-        ),
-
-        radial-gradient(
-            circle at 50% 35%,
-            #2b2414 0%,
-            transparent 38%
-        ),
-
-        repeating-linear-gradient(
-            45deg,
-            rgba(255,255,255,.012) 0 2px,
-            transparent 2px 8px
-        );
-}
-
-/* =========================================================
-   NAVBAR
+   NAV
 ========================================================= */
 
 .navbar {
 
-    height:
-        82px;
+    height: 76px;
 
-    border-bottom:
-        1px solid var(--line);
+    padding:
+        0 28px;
 
     display:
         flex;
@@ -1239,11 +1907,12 @@ button {
     justify-content:
         space-between;
 
-    padding:
-        0 28px;
+    border-bottom:
+        1px solid
+        var(--line);
 
     background:
-        rgba(7,8,12,.86);
+        rgba(7,9,13,.92);
 
     backdrop-filter:
         blur(18px);
@@ -1255,32 +1924,30 @@ button {
         0;
 
     z-index:
-        20;
+        100;
 }
 
-.brand {
+.logo {
 
     font-size:
         22px;
 
     font-weight:
-        900;
+        950;
 
     letter-spacing:
-        .8px;
+        .7px;
 
     color:
         var(--gold);
 }
 
-.brand span {
-
+.logo span {
     color:
-        #fff;
+        white;
 }
 
-.nav-left,
-.nav-right {
+.nav-user {
 
     display:
         flex;
@@ -1289,80 +1956,22 @@ button {
         center;
 
     gap:
-        22px;
-}
+        10px;
 
-.nav-link {
+    color:
+        #c4cad5;
 
     font-size:
         13px;
-
-    color:
-        #aeb5c2;
-
-    text-transform:
-        uppercase;
-
-    font-weight:
-        700;
-}
-
-.nav-link.active,
-.nav-link:hover {
-
-    color:
-        #fff;
-}
-
-.nav-pill {
-
-    border:
-        1px solid rgba(244,197,66,.3);
-
-    padding:
-        10px 14px;
-
-    border-radius:
-        10px;
-
-    color:
-        var(--gold);
-
-    background:
-        rgba(244,197,66,.06);
-}
-
-.profile-mini {
-
-    display:
-        flex;
-
-    align-items:
-        center;
-
-    gap:
-        10px;
-
-    padding:
-        8px 12px;
-
-    border:
-        1px solid var(--line);
-
-    border-radius:
-        11px;
-
-    background:
-        #12151c;
 }
 
 .avatar {
 
     width:
-        34px;
+        36px;
 
     height:
-        34px;
+        36px;
 
     border-radius:
         50%;
@@ -1376,273 +1985,152 @@ button {
     background:
         linear-gradient(
             145deg,
-            #525967,
-            #20252e
+            #545c69,
+            #252a33
         );
 
     border:
-        1px solid rgba(255,255,255,.18);
+        1px solid
+        rgba(244,197,66,.35);
 
     font-weight:
-        800;
+        900;
+
+    color:
+        var(--gold);
 }
 
 /* =========================================================
-   LOBBY GRID
+   LOBBY
 ========================================================= */
 
-.lobby-main {
+#lobby {
+
+    min-height:
+        100vh;
+}
+
+.lobby-wrapper {
 
     width:
-        min(1500px,100%);
+        min(1200px,100%);
 
     margin:
-        0 auto;
+        auto;
 
     padding:
+        38px 20px 70px;
+}
+
+.hero {
+
+    text-align:
+        center;
+
+    margin-bottom:
         28px;
+}
+
+.hero h1 {
+
+    font-size:
+        clamp(
+            28px,
+            5vw,
+            48px
+        );
+
+    margin:
+        0;
+
+    background:
+        linear-gradient(
+            135deg,
+            #fff1a5,
+            #f4c542,
+            #ff9700
+        );
+
+    -webkit-background-clip:
+        text;
+
+    color:
+        transparent;
+}
+
+.hero p {
+
+    color:
+        var(--muted);
+
+    margin-top:
+        10px;
+}
+
+/* =========================================================
+   CARD PANELS
+========================================================= */
+
+.grid {
 
     display:
         grid;
 
     grid-template-columns:
-        260px
-        minmax(0,1fr)
-        300px;
+        1fr 1fr;
 
     gap:
-        24px;
+        20px;
 }
 
-.side-card,
-.right-card,
-.center-card {
+.panel {
 
     background:
         linear-gradient(
             145deg,
-            rgba(22,24,31,.96),
-            rgba(12,14,19,.96)
+            rgba(22,27,36,.98),
+            rgba(12,15,21,.98)
         );
 
     border:
-        1px solid var(--line);
-
-    box-shadow:
-        0 24px 70px rgba(0,0,0,.28);
+        1px solid
+        var(--line);
 
     border-radius:
         18px;
-}
-
-.side-card,
-.right-card {
 
     padding:
-        18px;
+        24px;
+
+    box-shadow:
+        0 25px 70px
+        rgba(0,0,0,.28);
 }
 
-.section-title {
+.panel h2 {
 
     font-size:
-        13px;
-
-    text-transform:
-        uppercase;
-
-    color:
-        #c2c8d4;
-
-    font-weight:
-        800;
-
-    letter-spacing:
-        .5px;
+        18px;
 
     margin:
-        0 0 16px;
+        0 0 18px;
 }
 
-.feed {
+.panel-subtitle {
 
-    display:
-        flex;
-
-    flex-direction:
-        column;
-
-    gap:
-        14px;
-}
-
-.feed-row {
-
-    display:
-        flex;
-
-    gap:
-        10px;
-
-    align-items:
-        center;
-
-    padding-bottom:
-        12px;
-
-    border-bottom:
-        1px solid var(--line);
-}
-
-.feed-row:last-child {
-
-    border-bottom:
-        0;
-}
-
-.feed-text {
+    color:
+        var(--muted);
 
     font-size:
         12px;
 
-    color:
-        #b5bbc7;
-
-    line-height:
-        1.35;
-}
-
-.feed-text b {
-
-    color:
-        #fff;
-}
-
-.feed-dot {
-
-    width:
-        30px;
-
-    height:
-        30px;
-
-    border-radius:
-        50%;
-
-    display:
-        grid;
-
-    place-items:
-        center;
-
-    background:
-        #242933;
-
-    font-size:
-        13px;
-
-    flex:
-        none;
+    margin:
+        -10px 0 18px;
 }
 
 /* =========================================================
-   CENTER LOBBY CARD
+   INPUTS
 ========================================================= */
-
-.center-card {
-
-    min-height:
-        590px;
-
-    position:
-        relative;
-
-    overflow:
-        hidden;
-
-    padding:
-        26px;
-}
-
-.center-card:before {
-
-    content:
-        "";
-
-    position:
-        absolute;
-
-    inset:
-        0;
-
-    opacity:
-        .24;
-
-    background:
-
-        radial-gradient(
-            circle at 50% 40%,
-            rgba(244,197,66,.18),
-            transparent 30%
-        ),
-
-        linear-gradient(
-            135deg,
-            transparent 0 48%,
-            rgba(255,255,255,.018) 49% 51%,
-            transparent 52% 100%
-        );
-
-    pointer-events:
-        none;
-}
-
-.center-content {
-
-    position:
-        relative;
-
-    z-index:
-        1;
-
-    max-width:
-        700px;
-
-    margin:
-        0 auto;
-}
-
-.hero-title {
-
-    text-align:
-        center;
-
-    font-size:
-        30px;
-
-    margin:
-        8px 0 4px;
-
-    color:
-        var(--gold);
-
-    font-weight:
-        900;
-}
-
-.hero-sub {
-
-    text-align:
-        center;
-
-    color:
-        #858d9c;
-
-    font-size:
-        13px;
-
-    margin-bottom:
-        25px;
-}
 
 .field {
 
@@ -1658,17 +2146,20 @@ button {
     font-size:
         11px;
 
+    color:
+        #9ba4b3;
+
+    margin-bottom:
+        6px;
+
     text-transform:
         uppercase;
 
-    color:
-        #9ea6b4;
+    letter-spacing:
+        .4px;
 
     font-weight:
         800;
-
-    margin:
-        0 0 7px;
 }
 
 .field input,
@@ -1680,35 +2171,43 @@ button {
     height:
         46px;
 
+    background:
+        #090c11;
+
+    color:
+        white;
+
+    border:
+        1px solid
+        #2d3440;
+
     border-radius:
         10px;
 
-    border:
-        1px solid #2b303a;
-
-    background:
-        #0b0d12;
-
-    color:
-        #fff;
-
     padding:
-        0 14px;
+        0 13px;
 
     outline:
         none;
+
+    transition:
+        .15s;
 }
 
 .field input:focus,
 .field select:focus {
 
     border-color:
-        rgba(244,197,66,.55);
+        rgba(244,197,66,.75);
 
     box-shadow:
         0 0 0 3px
         rgba(244,197,66,.08);
 }
+
+/* =========================================================
+   BUTTONS
+========================================================= */
 
 .gold-btn {
 
@@ -1722,65 +2221,171 @@ button {
         0;
 
     border-radius:
-        10px;
+        11px;
 
     background:
         linear-gradient(
             135deg,
-            #ffd84d,
+            #ffe15b,
             #ff9700
         );
 
     color:
-        #15100a;
+        #181006;
 
     font-weight:
-        900;
+        950;
+
+    transition:
+        .15s;
 
     box-shadow:
-        0 10px 28px
-        rgba(255,157,0,.18);
+        0 12px 30px
+        rgba(255,151,0,.16);
+}
+
+.gold-btn:hover {
+
+    transform:
+        translateY(-2px);
+
+    box-shadow:
+        0 15px 36px
+        rgba(255,151,0,.26);
+}
+
+.secondary-btn {
+
+    width:
+        100%;
+
+    height:
+        44px;
+
+    border-radius:
+        10px;
+
+    border:
+        1px solid
+        var(--line);
+
+    background:
+        #1c222c;
+
+    color:
+        white;
+
+    font-weight:
+        800;
+}
+
+.secondary-btn:hover {
+    background:
+        #262e3a;
 }
 
 /* =========================================================
-   TABLE LOBBY
+   AUTH TABS
 ========================================================= */
 
-.table-grid {
+.auth-tabs {
 
     display:
         grid;
 
     grid-template-columns:
-        repeat(
-            2,
-            minmax(0,1fr)
-        );
+        1fr 1fr;
 
-    gap:
-        12px;
+    background:
+        #090c11;
 
-    margin-top:
+    border-radius:
+        11px;
+
+    padding:
+        4px;
+
+    margin-bottom:
         20px;
 }
 
-.lobby-table {
+.auth-tab {
 
     border:
-        1px solid var(--line);
+        0;
+
+    height:
+        40px;
+
+    border-radius:
+        8px;
+
+    background:
+        transparent;
+
+    color:
+        #8e97a6;
+
+    font-weight:
+        850;
+}
+
+.auth-tab.active {
+
+    color:
+        #111;
 
     background:
         linear-gradient(
-            145deg,
-            #151920,
-            #0e1015
+            135deg,
+            #ffe15b,
+            #ff9700
         );
+}
 
-    border-radius:
-        14px;
+.message {
+
+    min-height:
+        22px;
+
+    text-align:
+        center;
+
+    margin-top:
+        10px;
+
+    color:
+        var(--gold);
+
+    font-size:
+        12px;
+
+    font-weight:
+        800;
+}
+
+.message.error {
+    color:
+        #ff6666;
+}
+
+.user-card {
 
     padding:
-        16px;
+        14px;
+
+    margin-bottom:
+        18px;
+
+    border-radius:
+        12px;
+
+    background:
+        #0b0f15;
+
+    border:
+        1px solid
+        var(--line);
 
     display:
         flex;
@@ -1790,284 +2395,18 @@ button {
 
     align-items:
         center;
-
-    transition:
-        .18s;
 }
 
-.lobby-table:hover {
-
-    transform:
-        translateY(-2px);
-
-    border-color:
-        rgba(244,197,66,.35);
-}
-
-.stake {
-
-    font-size:
-        22px;
-
-    font-weight:
-        900;
-
+.user-card strong {
     color:
         var(--gold);
-}
-
-.table-meta {
-
-    font-size:
-        11px;
-
-    color:
-        #7f8796;
-
-    margin-top:
-        4px;
-}
-
-.join-circle {
-
-    width:
-        38px;
-
-    height:
-        38px;
-
-    border-radius:
-        50%;
-
-    display:
-        grid;
-
-    place-items:
-        center;
-
-    background:
-        linear-gradient(
-            135deg,
-            #ffd84d,
-            #ff9700
-        );
-
-    color:
-        #111;
-
-    font-size:
-        22px;
-
-    font-weight:
-        900;
-}
-
-.waiting {
-
-    margin-top:
-        15px;
-
-    text-align:
-        center;
-
-    color:
-        var(--gold);
-
-    font-weight:
-        800;
-
-    font-size:
-        13px;
 }
 
 /* =========================================================
-   PROFILE
+   GAME
 ========================================================= */
 
-.right-profile {
-
-    display:
-        flex;
-
-    flex-direction:
-        column;
-
-    align-items:
-        center;
-
-    text-align:
-        center;
-
-    padding:
-        10px 0 20px;
-
-    border-bottom:
-        1px solid var(--line);
-}
-
-.big-avatar {
-
-    width:
-        74px;
-
-    height:
-        74px;
-
-    border-radius:
-        50%;
-
-    display:
-        grid;
-
-    place-items:
-        center;
-
-    background:
-        linear-gradient(
-            145deg,
-            #565d68,
-            #1e222a
-        );
-
-    border:
-        2px solid
-        rgba(244,197,66,.45);
-
-    font-size:
-        25px;
-
-    font-weight:
-        900;
-}
-
-.profile-name {
-
-    font-weight:
-        900;
-
-    margin-top:
-        10px;
-}
-
-.vip-level {
-
-    font-size:
-        11px;
-
-    color:
-        var(--gold);
-
-    margin-top:
-        4px;
-}
-
-.stat-row {
-
-    display:
-        grid;
-
-    grid-template-columns:
-        repeat(
-            3,
-            1fr
-        );
-
-    gap:
-        7px;
-
-    margin-top:
-        15px;
-
-    width:
-        100%;
-}
-
-.stat {
-
-    background:
-        #0d0f14;
-
-    border:
-        1px solid var(--line);
-
-    border-radius:
-        9px;
-
-    padding:
-        9px 4px;
-}
-
-.stat b {
-
-    display:
-        block;
-
-    color:
-        var(--gold);
-
-    font-size:
-        14px;
-}
-
-.stat span {
-
-    font-size:
-        9px;
-
-    color:
-        #777f8d;
-}
-
-.reg-title {
-
-    font-size:
-        12px;
-
-    font-weight:
-        900;
-
-    margin:
-        18px 0 12px;
-
-    color:
-        #d8dce5;
-}
-
-.small-btn {
-
-    height:
-        38px;
-
-    border:
-        0;
-
-    border-radius:
-        9px;
-
-    background:
-        #232832;
-
-    color:
-        #fff;
-
-    font-weight:
-        800;
-
-    width:
-        100%;
-}
-
-.small-btn:hover {
-
-    background:
-        #2d333e;
-}
-
-/* =========================================================
-   GAME CONTAINER
-========================================================= */
-
-#game-container {
+#game {
 
     display:
         none;
@@ -2076,26 +2415,37 @@ button {
         100vh;
 
     padding:
-        18px 18px 30px;
+        20px;
 
     background:
-
         radial-gradient(
             circle at 50% 45%,
-            rgba(31,120,66,.13),
-            transparent 42%
+            rgba(25,130,70,.13),
+            transparent 45%
         ),
-
-        #08090c;
+        #07090d;
 }
 
-.game-top {
+.game-header {
 
     width:
         min(1200px,100%);
 
     margin:
-        0 auto 12px;
+        auto;
+
+    padding:
+        12px 15px;
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius:
+        13px;
+
+    background:
+        rgba(15,18,24,.95);
 
     display:
         flex;
@@ -2107,137 +2457,67 @@ button {
         center;
 
     gap:
-        10px;
+        12px;
 
     flex-wrap:
         wrap;
-
-    background:
-        rgba(15,17,22,.94);
-
-    border:
-        1px solid var(--line);
-
-    border-radius:
-        14px;
-
-    padding:
-        10px 14px;
 }
 
-.game-brand {
-
-    font-weight:
-        900;
+.game-logo {
 
     color:
         var(--gold);
 
-    letter-spacing:
-        .4px;
+    font-weight:
+        950;
 }
 
-.info-wrap {
+.game-info {
 
     display:
         flex;
 
     gap:
-        7px;
+        8px;
 
     flex-wrap:
         wrap;
 }
 
-.info-badge {
-
-    font-size:
-        11px;
-
-    color:
-        #b8bfca;
-
-    background:
-        #0b0d11;
-
-    border:
-        1px solid var(--line);
-
-    border-radius:
-        9px;
+.badge {
 
     padding:
         7px 10px;
-}
-
-.info-badge b {
-
-    color:
-        #fff;
-}
-
-/* =========================================================
-   TESTER CONTROL
-========================================================= */
-
-#tester-control {
-
-    width:
-        min(1200px,100%);
-
-    margin:
-        0 auto 10px;
-
-    background:
-        #17101d;
-
-    border:
-        1px solid #7546a3;
 
     border-radius:
-        11px;
+        8px;
 
-    padding:
-        9px 12px;
+    background:
+        #090c11;
+
+    border:
+        1px solid
+        var(--line);
 
     color:
-        #caa6eb;
+        #aeb6c3;
 
     font-size:
-        12px;
+        11px;
 }
 
-#tester-control select {
-
-    background:
-        #0d0d12;
-
+.badge b {
     color:
-        #fff;
-
-    border:
-        1px solid #7546a3;
-
-    border-radius:
-        7px;
-
-    padding:
-        5px 8px;
+        white;
 }
 
-#status-msg {
+#status {
 
-    width:
-        min(1200px,100%);
-
-    margin:
-        8px auto;
+    min-height:
+        28px;
 
     text-align:
         center;
-
-    min-height:
-        24px;
 
     color:
         var(--gold);
@@ -2245,59 +2525,51 @@ button {
     font-weight:
         900;
 
-    font-size:
-        14px;
+    margin:
+        10px;
 }
 
 /* =========================================================
-   BURA TABLE
+   TABLE
 ========================================================= */
 
-.game-board {
+.table-board {
 
     width:
-        min(1200px,100%);
+        min(1100px,96vw);
 
     height:
-        620px;
-
-    margin:
-        0 auto;
+        560px;
 
     position:
         relative;
 
+    margin:
+        0 auto;
+
     border-radius:
         50% / 38%;
 
-    background:
+    border:
+        17px solid
+        #2d1c10;
 
+    background:
         radial-gradient(
-            ellipse at 50% 48%,
-            rgba(33,137,76,.95),
-            rgba(10,78,42,.98) 62%,
-            #06351d 100%
+            ellipse at center,
+            #16834b 0%,
+            #0a6237 55%,
+            #06341e 100%
         );
 
-    border:
-        18px solid #2a1b11;
-
     box-shadow:
-
-        0 25px 70px
-        rgba(0,0,0,.65),
-
-        inset 0 0 0 4px
-        rgba(255,220,150,.09),
-
-        inset 0 0 80px
-        rgba(0,0,0,.65);
-
-    overflow:
-        hidden;
+        0 25px 90px
+        rgba(0,0,0,.75),
+        inset 0 0 70px
+        rgba(0,0,0,.40);
 }
 
-.game-board:before {
+.table-board:before {
 
     content:
         "";
@@ -2306,24 +2578,20 @@ button {
         absolute;
 
     inset:
-        15px;
+        14px;
+
+    border:
+        1px solid
+        rgba(255,255,255,.10);
 
     border-radius:
         50% / 38%;
 
-    border:
-        1px solid
-        rgba(255,255,255,.09);
-
-    box-shadow:
-        inset 0 0 50px
-        rgba(0,0,0,.18);
-
     pointer-events:
         none;
 }
 
-.board-logo {
+.table-logo {
 
     position:
         absolute;
@@ -2335,154 +2603,60 @@ button {
         50%;
 
     transform:
-        translate(
-            -50%,
-            -50%
-        );
+        translate(-50%,-50%);
 
     color:
-        rgba(255,255,255,.06);
+        rgba(255,255,255,.07);
 
     font-size:
-        30px;
+        32px;
 
     font-weight:
-        900;
+        950;
 
     letter-spacing:
         4px;
-
-    pointer-events:
-        none;
 }
 
-.board-trump {
+/* =========================================================
+   SEATS
+========================================================= */
+
+#players {
 
     position:
         absolute;
 
-    left:
-        50%;
-
-    top:
-        50%;
-
-    transform:
-        translate(
-            -50%,
-            52px
-        );
-
-    font-size:
-        12px;
-
-    color:
-        rgba(255,255,255,.34);
-
-    font-weight:
-        800;
+    inset:
+        0;
 }
-
-/* =========================================================
-   PLAYER SEATS
-========================================================= */
 
 .seat {
 
     position:
         absolute;
 
-    width:
-        150px;
-
-    min-height:
-        78px;
-
     transform:
-        translate(
-            -50%,
-            -50%
-        );
+        translate(-50%,-50%);
 
-    z-index:
-        5;
+    width:
+        145px;
 
     text-align:
         center;
-}
 
-.seat.bottom {
-
-    left:
-        50%;
-
-    top:
-        88%;
-}
-
-.seat.top {
-
-    left:
-        50%;
-
-    top:
-        12%;
-}
-
-.seat.top-left {
-
-    left:
-        22%;
-
-    top:
-        18%;
-}
-
-.seat.top-right {
-
-    left:
-        78%;
-
-    top:
-        18%;
-}
-
-.seat.left {
-
-    left:
-        8%;
-
-    top:
-        50%;
-}
-
-.seat.right {
-
-    left:
-        92%;
-
-    top:
-        50%;
-}
-
-.seat.active .seat-card {
-
-    border-color:
-        rgba(244,197,66,.9);
-
-    box-shadow:
-        0 0 22px
-        rgba(244,197,66,.25);
+    z-index:
+        5;
 }
 
 .seat-card {
 
     background:
-        rgba(8,10,13,.86);
+        rgba(5,9,11,.88);
 
     border:
         1px solid
-        rgba(255,255,255,.12);
+        rgba(255,255,255,.13);
 
     border-radius:
         12px;
@@ -2490,39 +2664,32 @@ button {
     padding:
         8px;
 
-    backdrop-filter:
-        blur(8px);
-
     box-shadow:
-        0 8px 24px
-        rgba(0,0,0,.35);
+        0 8px 25px
+        rgba(0,0,0,.4);
 }
 
-.seat-head {
+.seat.current
+.seat-card {
 
-    display:
-        flex;
+    border-color:
+        var(--gold);
 
-    align-items:
-        center;
-
-    justify-content:
-        center;
-
-    gap:
-        7px;
+    box-shadow:
+        0 0 25px
+        rgba(244,197,66,.35);
 }
 
 .seat-avatar {
 
     width:
-        34px;
+        30px;
 
     height:
-        34px;
+        30px;
 
-    border-radius:
-        50%;
+    margin:
+        auto;
 
     display:
         grid;
@@ -2530,19 +2697,17 @@ button {
     place-items:
         center;
 
-    background:
-        linear-gradient(
-            145deg,
-            #59606c,
-            #20242b
-        );
+    border-radius:
+        50%;
 
-    border:
-        1px solid
-        rgba(255,255,255,.18);
+    background:
+        #303845;
+
+    color:
+        var(--gold);
 
     font-size:
-        12px;
+        11px;
 
     font-weight:
         900;
@@ -2550,64 +2715,29 @@ button {
 
 .seat-name {
 
+    margin-top:
+        4px;
+
     font-size:
         12px;
 
     font-weight:
         900;
-
-    max-width:
-        80px;
-
-    overflow:
-        hidden;
-
-    text-overflow:
-        ellipsis;
-
-    white-space:
-        nowrap;
 }
 
-.seat-balance {
+.seat-count {
+
+    color:
+        #8993a4;
 
     font-size:
         10px;
 
-    color:
-        #8d96a4;
-
     margin-top:
-        2px;
+        3px;
 }
 
-.turn-dot {
-
-    width:
-        7px;
-
-    height:
-        7px;
-
-    border-radius:
-        50%;
-
-    background:
-        var(--gold);
-
-    box-shadow:
-        0 0 10px
-        var(--gold);
-
-    display:
-        inline-block;
-}
-
-/* =========================================================
-   OPPONENT CARD BACKS
-========================================================= */
-
-.opponent-cards {
+.card-backs {
 
     display:
         flex;
@@ -2616,59 +2746,45 @@ button {
         center;
 
     margin-top:
-        6px;
-
-    min-height:
-        32px;
+        5px;
 }
 
-.back-card {
+.card-back {
 
     width:
-        23px;
+        20px;
 
     height:
-        32px;
+        29px;
+
+    border:
+        1px solid
+        #d3af48;
 
     border-radius:
         4px;
 
     margin-left:
-        -8px;
-
-    border:
-        1px solid #d8b75a;
+        -7px;
 
     background:
-
-        radial-gradient(
-            circle at 50% 50%,
-            rgba(255,215,0,.25) 0 2px,
-            transparent 3px
-        ),
-
         repeating-linear-gradient(
             45deg,
-            #263038 0 3px,
-            #131b21 3px 6px
+            #26313b 0 3px,
+            #121921 3px 6px
         );
-
-    box-shadow:
-        0 3px 7px
-        rgba(0,0,0,.45);
 }
 
-.back-card:first-child {
-
+.card-back:first-child {
     margin-left:
         0;
 }
 
 /* =========================================================
-   CENTER PLAY AREA
+   TABLE CARDS
 ========================================================= */
 
-.play-area {
+#table-cards {
 
     position:
         absolute;
@@ -2680,70 +2796,55 @@ button {
         50%;
 
     transform:
-        translate(
-            -50%,
-            -50%
-        );
-
-    width:
-        48%;
-
-    min-height:
-        135px;
+        translate(-50%,-50%);
 
     display:
         flex;
+
+    gap:
+        15px;
+
+    align-items:
+        center;
 
     justify-content:
         center;
 
-    align-items:
-        center;
-
-    gap:
-        16px;
+    max-width:
+        55%;
 
     z-index:
-        3;
+        4;
 }
 
 .play-group {
 
-    display:
-        flex;
-
-    flex-direction:
-        column;
-
-    align-items:
+    text-align:
         center;
-
-    min-width:
-        75px;
 }
 
-.play-player {
+.play-name {
 
     font-size:
         10px;
 
-    color:
-        #c9ced7;
-
     margin-bottom:
-        4px;
+        5px;
 
     font-weight:
         800;
 }
 
-.play-cards {
+.play-group.winner
+.card {
 
-    display:
-        flex;
+    border:
+        2px solid
+        var(--gold);
 
-    justify-content:
-        center;
+    box-shadow:
+        0 0 20px
+        var(--gold);
 }
 
 /* =========================================================
@@ -2753,29 +2854,30 @@ button {
 .card {
 
     width:
-        58px;
+        62px;
 
     height:
-        84px;
+        90px;
 
     border-radius:
-        7px;
+        8px;
 
     background:
-        #f8f8f5;
+        #fafaf7;
 
     color:
         #151515;
 
     border:
-        1px solid #ddd;
+        1px solid
+        #d5d5d5;
 
     box-shadow:
-        0 5px 12px
+        0 6px 17px
         rgba(0,0,0,.55);
 
     padding:
-        5px;
+        6px;
 
     display:
         flex;
@@ -2786,106 +2888,77 @@ button {
     justify-content:
         space-between;
 
+    user-select:
+        none;
+
     font-weight:
-        900;
+        950;
 }
 
-.card .rank-top {
+.card.red {
+    color:
+        #ad1515;
+}
+
+.card-rank {
 
     font-size:
-        12px;
-
-    line-height:
-        1;
+        14px;
 }
 
-.card .suit-center {
+.card-suit {
 
     text-align:
         center;
 
     font-size:
-        25px;
-
-    line-height:
-        1;
-
-    margin:
-        auto;
+        29px;
 }
 
-.card .rank-bottom {
+.card-bottom {
 
     text-align:
         right;
 
     font-size:
-        12px;
+        14px;
 
-    line-height:
-        1;
-}
-
-.card.suit-spades,
-.card.suit-clubs {
-
-    color:
-        #121212;
-}
-
-.card.suit-hearts,
-.card.suit-diamonds {
-
-    color:
-        #a00;
-}
-
-.play-group.winning-play .card {
-
-    box-shadow:
-        0 0 18px
-        rgba(244,197,66,.8);
-
-    border:
-        2px solid
-        var(--gold);
+    transform:
+        rotate(180deg);
 }
 
 /* =========================================================
-   PLAYER HAND
+   HAND
 ========================================================= */
 
-.hand-panel {
+.hand-wrap {
 
     width:
-        min(1100px,100%);
+        min(1000px,100%);
 
     margin:
-        12px auto 0;
+        18px auto 0;
 
-    display:
-        flex;
-
-    flex-direction:
-        column;
-
-    align-items:
+    text-align:
         center;
 }
 
-#cards-owner-title {
+.hand-title {
+
+    color:
+        #9aa3b1;
 
     font-size:
         12px;
 
-    color:
-        #aeb5c2;
-
-    margin:
-        4px 0 7px;
+    margin-bottom:
+        8px;
 }
 
 #my-cards {
+
+    min-height:
+        105px;
 
     display:
         flex;
@@ -2893,38 +2966,36 @@ button {
     justify-content:
         center;
 
-    gap:
-        8px;
-
-    min-height:
-        95px;
+    align-items:
+        flex-end;
 
     flex-wrap:
         wrap;
+
+    gap:
+        8px;
 }
 
 #my-cards .card {
-
-    width:
-        64px;
-
-    height:
-        92px;
 
     cursor:
         pointer;
 
     transition:
-        .12s;
+        transform .14s,
+        border .14s,
+        box-shadow .14s;
 }
 
-#my-cards .card:hover {
+#my-cards
+.card:hover {
 
     transform:
         translateY(-7px);
 }
 
-#my-cards .card.selected {
+#my-cards
+.card.selected {
 
     transform:
         translateY(-14px);
@@ -2934,23 +3005,23 @@ button {
         var(--gold);
 
     box-shadow:
-        0 0 20px
-        rgba(244,197,66,.55);
-}
-
-.action-container {
-
-    margin:
-        7px 0 14px;
+        0 0 22px
+        rgba(244,197,66,.65);
 }
 
 .play-btn {
 
+    margin-top:
+        12px;
+
+    min-width:
+        170px;
+
     height:
-        40px;
+        43px;
 
     padding:
-        0 34px;
+        0 28px;
 
     border:
         0;
@@ -2961,325 +3032,160 @@ button {
     background:
         linear-gradient(
             135deg,
-            #ffd84d,
+            #ffe15b,
             #ff9700
         );
 
-    color:
-        #111;
-
     font-weight:
-        900;
+        950;
+
+    color:
+        #15100a;
 }
 
 .play-btn:disabled {
 
     background:
-        #303641;
+        #2e3540;
 
     color:
-        #737b88;
+        #68717e;
 
     cursor:
         not-allowed;
 }
 
 /* =========================================================
-   LEADERBOARD
-========================================================= */
-
-.leaderboard-box {
-
-    width:
-        min(1100px,100%);
-
-    margin:
-        0 auto;
-
-    background:
-        #0e1116;
-
-    border:
-        1px solid var(--line);
-
-    border-radius:
-        13px;
-
-    overflow:
-        auto;
-}
-
-.lb-table {
-
-    width:
-        100%;
-
-    border-collapse:
-        collapse;
-
-    text-align:
-        center;
-
-    font-size:
-        11px;
-}
-
-.lb-table th {
-
-    padding:
-        9px;
-
-    color:
-        #818998;
-
-    border-bottom:
-        1px solid var(--line);
-
-    font-weight:
-        800;
-}
-
-.lb-table td {
-
-    padding:
-        9px;
-
-    border-bottom:
-        1px solid
-        rgba(255,255,255,.05);
-
-    color:
-        #dfe3ea;
-}
-
-/* =========================================================
    RESPONSIVE
 ========================================================= */
 
-@media(max-width:1000px) {
+@media (
+    max-width: 800px
+) {
 
-    .lobby-main {
-
+    .grid {
         grid-template-columns:
             1fr;
     }
 
-    .side-card,
-    .right-card {
-
-        display:
-            none;
-    }
-
-    .center-card {
-
-        min-height:
-            600px;
-    }
-
-    .game-board {
+    .table-board {
 
         height:
-            560px;
-    }
-
-    .seat {
-
-        width:
-            125px;
-    }
-
-    .play-area {
-
-        width:
-            58%;
-    }
-}
-
-@media(max-width:650px) {
-
-    .navbar {
-
-        height:
-            auto;
-
-        min-height:
-            70px;
-
-        padding:
-            10px 14px;
-
-        gap:
-            8px;
-    }
-
-    .nav-left {
-
-        gap:
-            10px;
-    }
-
-    .nav-right .nav-link {
-
-        display:
-            none;
-    }
-
-    .brand {
-
-        font-size:
-            17px;
-    }
-
-    .nav-pill {
-
-        display:
-            none;
-    }
-
-    .lobby-main {
-
-        padding:
-            12px;
-    }
-
-    .center-card {
-
-        padding:
-            18px;
-    }
-
-    .table-grid {
-
-        grid-template-columns:
-            1fr;
-    }
-
-    #game-container {
-
-        padding:
-            8px;
-    }
-
-    .game-board {
-
-        height:
-            470px;
+            480px;
 
         border-width:
             11px;
-
-        border-radius:
-            48% / 30%;
     }
 
     .seat {
-
         width:
-            105px;
-    }
-
-    .seat-avatar {
-
-        width:
-            28px;
-
-        height:
-            28px;
-    }
-
-    .seat-name {
-
-        font-size:
-            10px;
-    }
-
-    .seat.left {
-
-        left:
-            10%;
-    }
-
-    .seat.right {
-
-        left:
-            90%;
-    }
-
-    .seat.top-left {
-
-        left:
-            24%;
-    }
-
-    .seat.top-right {
-
-        left:
-            76%;
-    }
-
-    .play-area {
-
-        width:
-            65%;
-
-        gap:
-            5px;
-    }
-
-    .play-group {
-
-        min-width:
-            48px;
+            110px;
     }
 
     .card {
 
         width:
-            43px;
+            52px;
 
         height:
-            63px;
+            76px;
+    }
+
+    .card-suit {
+        font-size:
+            23px;
+    }
+
+    #table-cards {
+        max-width:
+            70%;
+    }
+}
+
+@media (
+    max-width: 520px
+) {
+
+    .navbar {
+        padding:
+            0 13px;
+    }
+
+    .logo {
+        font-size:
+            17px;
+    }
+
+    .lobby-wrapper {
+        padding:
+            25px 12px;
+    }
+
+    .panel {
+        padding:
+            17px;
+    }
+
+    #game {
+        padding:
+            8px;
+    }
+
+    .table-board {
+
+        height:
+            420px;
+
+        border-radius:
+            47% / 30%;
+    }
+
+    .seat {
+
+        width:
+            92px;
+    }
+
+    .seat-card {
+        padding:
+            5px;
+    }
+
+    .seat-avatar {
+
+        width:
+            25px;
+
+        height:
+            25px;
+    }
+
+    .seat-name {
+        font-size:
+            10px;
+    }
+
+    .card {
+
+        width:
+            46px;
+
+        height:
+            68px;
 
         padding:
             4px;
     }
 
-    .card .suit-center {
-
+    .card-suit {
         font-size:
-            18px;
+            19px;
     }
 
-    .card .rank-top,
-    .card .rank-bottom {
-
+    .card-rank,
+    .card-bottom {
         font-size:
-            9px;
-    }
-
-    #my-cards .card {
-
-        width:
-            52px;
-
-        height:
-            75px;
-    }
-
-    .game-top {
-
-        padding:
-            8px;
-    }
-
-    .info-badge {
-
-        font-size:
-            9px;
-
-        padding:
-            6px;
+            11px;
     }
 }
 
@@ -3290,579 +3196,401 @@ button {
 <body>
 
 <!-- ======================================================
-     HOME / TABLE LOBBY
+     LOBBY
 ======================================================= -->
 
-<section id="lobby">
+<div id="lobby">
 
-    <header class="navbar">
+    <div class="navbar">
 
-        <div class="nav-left">
-
-            <div class="brand">
-                ♠ <span>BURA</span> VIP CLUB ♣
-            </div>
-
-            <div class="nav-link active">
-                HOME
-            </div>
-
-            <div class="nav-link">
-                VIP PERKS
-            </div>
-
-            <div class="nav-link">
-                LEADERBOARDS
-            </div>
-
-            <div class="nav-link">
-                GAME HISTORY
-            </div>
-
-            <div class="nav-link">
-                STORE
-            </div>
-
+        <div class="logo">
+            BURA
+            <span>
+                VIP CLUB
+            </span>
         </div>
 
-        <div class="nav-right">
+        <div class="nav-user">
 
-            <div class="nav-link">
-                ✉ MESSAGES
-            </div>
-
-            <div class="nav-pill">
-                ♛ BANK <b>12,500</b> ●
-            </div>
-
-            <div class="nav-link">
-                ◉ SUPPORT
-            </div>
-
-            <div class="profile-mini">
-
-                <div class="avatar">
-                    S
+            <div>
+                <div id="nav-username">
+                    სტუმარი
                 </div>
 
-                <span
+                <small
+                    id="nav-balance"
                     style="
-                        font-size:12px;
-                        font-weight:800
+                    color:#7f8998
                     "
                 >
-                    SABA123
-                </span>
+                    გაიარე რეგისტრაცია
+                </small>
+            </div>
 
+            <div
+                class="avatar"
+                id="nav-avatar"
+            >
+                G
             </div>
 
         </div>
 
-    </header>
+    </div>
 
+    <div
+        class="lobby-wrapper"
+    >
 
-    <main class="lobby-main">
+        <div class="hero">
 
-        <!-- LEFT -->
-        <aside class="side-card">
+            <h1>
+                BURA VIP CLUB
+            </h1>
 
-            <h3 class="section-title">
-                VIP MEMBERS ACTIVITY FEED
-            </h3>
+            <p>
+                კლასიკური ბურა თანამედროვე ონლაინ მაგიდაზე
+            </p>
 
-            <div class="feed">
+        </div>
 
-                <div class="feed-row">
+        <div class="grid">
 
-                    <div class="feed-dot">
-                        ♛
-                    </div>
+            <!-- AUTH -->
 
-                    <div class="feed-text">
-                        <b>User X</b>
-                        joined a high-stakes table
-                    </div>
+            <div class="panel">
 
-                </div>
+                <h2>
+                    ანგარიში
+                </h2>
 
-                <div class="feed-row">
-
-                    <div class="feed-dot">
-                        ★
-                    </div>
-
-                    <div class="feed-text">
-                        <b>User Y</b>
-                        unlocked a badge
-                    </div>
-
-                </div>
-
-                <div class="feed-row">
-
-                    <div class="feed-dot">
-                        ♠
-                    </div>
-
-                    <div class="feed-text">
-                        <b>User X</b>
-                        joined a badge table
-                    </div>
-
-                </div>
-
-                <div class="feed-row">
-
-                    <div class="feed-dot">
-                        ●
-                    </div>
-
-                    <div class="feed-text">
-                        <b>Player 77</b>
-                        won a VIP hand
-                    </div>
-
-                </div>
-
-                <div class="feed-row">
-
-                    <div class="feed-dot">
-                        ♦
-                    </div>
-
-                    <div class="feed-text">
-                        <b>Dealer</b>
-                        opened a new table
-                    </div>
-
-                </div>
-
-            </div>
-
-        </aside>
-
-
-        <!-- CENTER -->
-        <section class="center-card">
-
-            <div class="center-content">
-
-                <div class="hero-title">
-                    ♠ BURA VIP CLUB ♣
-                </div>
-
-                <div class="hero-sub">
-                    აირჩიე თამაშის პარამეტრები და შემდეგ მაგიდა,
-                    რომელზეც გინდა შესვლა
-                </div>
-
-
-                <!-- SETUP -->
-                <div id="setup-form">
-
-                    <div class="field">
-
-                        <label>
-                            მოთამაშის სახელი
-                        </label>
-
-                        <input
-                            type="text"
-                            id="player-name"
-                            value="საბა123"
-                            maxlength="16"
-                        >
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label>
-                            მოთამაშეების რაოდენობა
-                        </label>
-
-                        <select id="player-capacity">
-
-                            <option value="2">
-                                2 მოთამაშე
-                            </option>
-
-                            <option
-                                value="3"
-                                selected
-                            >
-                                3 მოთამაშე
-                            </option>
-
-                            <option value="4">
-                                4 მოთამაშე
-                            </option>
-
-                            <option value="5">
-                                5 მოთამაშე
-                            </option>
-
-                            <option value="6">
-                                6 მოთამაშე
-                            </option>
-
-                        </select>
-
-                    </div>
-
-
-                    <div class="field">
-
-                        <label>
-                            პარტიები
-                        </label>
-
-                        <select id="player-parties">
-
-                            <option value="1">
-                                1 პარტია · 5 ხელი
-                            </option>
-
-                            <option value="2">
-                                2 პარტია · 10 ხელი
-                            </option>
-
-                        </select>
-
-                    </div>
-
+                <div class="auth-tabs">
 
                     <button
-                        class="gold-btn"
-                        onclick="showTablesLobby()"
+                        id="login-tab"
+                        class="auth-tab active"
+                        onclick="showLogin()"
                     >
-                        მაგიდის არჩევა ›
+                        შესვლა
+                    </button>
+
+                    <button
+                        id="register-tab"
+                        class="auth-tab"
+                        onclick="showRegister()"
+                    >
+                        რეგისტრაცია
                     </button>
 
                 </div>
 
+                <!-- LOGIN -->
 
-                <!-- TABLE SELECTION -->
                 <div
-                    id="tables-lobby"
+                    id="login-box"
+                >
+
+                    <div class="field">
+
+                        <label>
+                            Username
+                        </label>
+
+                        <input
+                            id="login-username"
+                            placeholder="შენი username"
+                        />
+
+                    </div>
+
+                    <div class="field">
+
+                        <label>
+                            პაროლი
+                        </label>
+
+                        <input
+                            id="login-password"
+                            type="password"
+                            placeholder="პაროლი"
+                        />
+
+                    </div>
+
+                    <button
+                        class="gold-btn"
+                        onclick="loginUser()"
+                    >
+                        შესვლა
+                    </button>
+
+                </div>
+
+                <!-- REGISTER -->
+
+                <div
+                    id="register-box"
                     class="hidden"
                 >
 
-                    <div
+                    <div class="field">
+
+                        <label>
+                            აირჩიე Username
+                        </label>
+
+                        <input
+                            id="reg-username"
+                            maxlength="20"
+                            placeholder="მაგ: saba123"
+                        />
+
+                    </div>
+
+                    <div class="field">
+
+                        <label>
+                            Email
+                        </label>
+
+                        <input
+                            id="reg-email"
+                            type="email"
+                            placeholder="you@email.com"
+                        />
+
+                    </div>
+
+                    <div class="field">
+
+                        <label>
+                            პაროლი
+                        </label>
+
+                        <input
+                            id="reg-password"
+                            type="password"
+                            placeholder="მინიმუმ 6 სიმბოლო"
+                        />
+
+                    </div>
+
+                    <button
+                        class="gold-btn"
+                        onclick="registerUser()"
+                    >
+                        რეგისტრაცია
+                    </button>
+
+                </div>
+
+                <div
+                    id="auth-message"
+                    class="message"
+                ></div>
+
+            </div>
+
+            <!-- TABLE -->
+
+            <div class="panel">
+
+                <h2>
+                    მაგიდაზე შესვლა
+                </h2>
+
+                <div
+                    class="panel-subtitle"
+                >
+                    თამაშამდე საჭიროა ანგარიში.
+                </div>
+
+                <div
+                    id="logged-user-card"
+                    class="user-card hidden"
+                >
+
+                    <div>
+                        მოთამაშე:
+                        <strong
+                            id="logged-name"
+                        ></strong>
+                    </div>
+
+                    <button
+                        onclick="logout()"
                         style="
-                            display:flex;
-                            justify-content:space-between;
-                            align-items:center;
-                            margin-top:10px
+                            background:none;
+                            border:0;
+                            color:#ff6868;
+                            font-weight:800;
                         "
                     >
-
-                        <div>
-
-                            <div
-                                style="
-                                    font-weight:900;
-                                    color:#fff
-                                "
-                            >
-                                აირჩიე მაგიდა
-                            </div>
-
-                            <div
-                                style="
-                                    font-size:11px;
-                                    color:#777f8d;
-                                    margin-top:3px
-                                "
-                            >
-                                შენი არჩევანი გახსნის შესაბამის თამაშის ოთახს
-                            </div>
-
-                        </div>
-
-
-                        <button
-                            class="small-btn"
-                            style="
-                                width:auto;
-                                padding:0 12px
-                            "
-                            onclick="backToSetup()"
-                        >
-                            უკან
-                        </button>
-
-                    </div>
-
-
-                    <div class="table-grid">
-
-                        <div
-                            class="lobby-table"
-                            onclick="joinSelectedTable(1)"
-                        >
-
-                            <div>
-
-                                <div class="stake">
-                                    $1
-                                </div>
-
-                                <div class="table-meta">
-                                    მოგება ·
-                                    <b>1,000 $</b>
-                                </div>
-
-                            </div>
-
-                            <div class="join-circle">
-                                ›
-                            </div>
-
-                        </div>
-
-
-                        <div
-                            class="lobby-table"
-                            onclick="joinSelectedTable(2)"
-                        >
-
-                            <div>
-
-                                <div class="stake">
-                                    $2
-                                </div>
-
-                                <div class="table-meta">
-                                    მოგება ·
-                                    <b>2,000 $</b>
-                                </div>
-
-                            </div>
-
-                            <div class="join-circle">
-                                ›
-                            </div>
-
-                        </div>
-
-
-                        <div
-                            class="lobby-table"
-                            onclick="joinSelectedTable(5)"
-                        >
-
-                            <div>
-
-                                <div class="stake">
-                                    $5
-                                </div>
-
-                                <div class="table-meta">
-                                    მოგება ·
-                                    <b>5,000 $</b>
-                                </div>
-
-                            </div>
-
-                            <div class="join-circle">
-                                ›
-                            </div>
-
-                        </div>
-
-
-                        <div
-                            class="lobby-table"
-                            onclick="joinSelectedTable(10)"
-                        >
-
-                            <div>
-
-                                <div class="stake">
-                                    $10
-                                </div>
-
-                                <div class="table-meta">
-                                    მოგება ·
-                                    <b>10,000 $</b>
-                                </div>
-
-                            </div>
-
-                            <div class="join-circle">
-                                ›
-                            </div>
-
-                        </div>
-
-                    </div>
-
-
-                    <div
-                        id="lobby-wait-msg"
-                        class="waiting hidden"
-                    ></div>
+                        გასვლა
+                    </button>
 
                 </div>
 
-            </div>
+                <div class="field">
 
-        </section>
+                    <label>
+                        მოთამაშეების რაოდენობა
+                    </label>
 
+                    <select
+                        id="capacity"
+                    >
 
-        <!-- RIGHT -->
-        <aside class="right-card">
+                        <option value="2">
+                            2 მოთამაშე
+                        </option>
 
-            <h3 class="section-title">
-                PROFILE SUMMARY
-            </h3>
+                        <option value="3">
+                            3 მოთამაშე
+                        </option>
 
+                        <option value="4">
+                            4 მოთამაშე
+                        </option>
 
-            <div class="right-profile">
+                        <option value="5">
+                            5 მოთამაშე
+                        </option>
 
-                <div class="big-avatar">
-                    S
-                </div>
+                        <option value="6">
+                            6 მოთამაშე
+                        </option>
 
-                <div class="profile-name">
-                    SABA123 ♠
-                </div>
-
-                <div class="vip-level">
-                    VIP LEVEL 3
-                </div>
-
-
-                <div class="stat-row">
-
-                    <div class="stat">
-                        <b>12,500</b>
-                        <span>COINS</span>
-                    </div>
-
-                    <div class="stat">
-                        <b>8</b>
-                        <span>WINS</span>
-                    </div>
-
-                    <div class="stat">
-                        <b>3</b>
-                        <span>BADGES</span>
-                    </div>
+                    </select>
 
                 </div>
 
-            </div>
+                <div class="field">
 
+                    <label>
+                        პარტიები
+                    </label>
 
-            <div class="reg-title">
-                QUICK REGISTRATION
-            </div>
+                    <select
+                        id="parties"
+                    >
 
+                        <option value="1">
+                            1 პარტია
+                        </option>
 
-            <div class="field">
+                        <option value="2">
+                            2 პარტია
+                        </option>
 
-                <label>
-                    Email
-                </label>
+                        <option value="3">
+                            3 პარტია
+                        </option>
 
-                <input
-                    type="email"
-                    placeholder="your@email.com"
+                    </select>
+
+                </div>
+
+                <div class="field">
+
+                    <label>
+                        ფსონი
+                    </label>
+
+                    <select
+                        id="stake"
+                    >
+
+                        <option value="1">
+                            1
+                        </option>
+
+                        <option value="5">
+                            5
+                        </option>
+
+                        <option value="10">
+                            10
+                        </option>
+
+                        <option value="20">
+                            20
+                        </option>
+
+                    </select>
+
+                </div>
+
+                <button
+                    class="gold-btn"
+                    onclick="joinTable()"
                 >
+                    თამაშის დაწყება
+                </button>
+
+                <div
+                    id="waiting-message"
+                    class="message"
+                ></div>
 
             </div>
 
+        </div>
 
-            <div class="field">
+    </div>
 
-                <label>
-                    Password
-                </label>
-
-                <input
-                    type="password"
-                    placeholder="••••••••"
-                >
-
-            </div>
-
-
-            <button
-                class="gold-btn"
-                onclick="
-                    alert(
-                        'რეგისტრაციის დემო ფორმა'
-                    )
-                "
-            >
-                რეგისტრაცია
-            </button>
-
-        </aside>
-
-    </main>
-
-</section>
-
+</div>
 
 <!-- ======================================================
      GAME
 ======================================================= -->
 
-<section id="game-container">
+<div id="game">
 
+    <div
+        class="game-header"
+    >
 
-    <div class="game-top">
-
-        <div class="game-brand">
-            ♠ BURA VIP CLUB ♣
+        <div
+            class="game-logo"
+        >
+            BURA VIP CLUB
         </div>
 
+        <div
+            class="game-info"
+        >
 
-        <div class="info-wrap">
-
-            <div class="info-badge">
-                სტავკა:
-                <b>
-                    $<span id="table-stake-disp">
-                        1
-                    </span>
-                </b>
-            </div>
-
-
-            <div class="info-badge">
-                პარტია:
-                <b id="party-num">
-                    1
-                </b>
-                /
-                <span id="target-parties">
-                    1
-                </span>
-            </div>
-
-
-            <div class="info-badge">
-                ხელი:
-                <b id="hand-num">
-                    1
-                </b>
-            </div>
-
-
-            <div class="info-badge">
+            <div
+                class="badge"
+            >
                 კოზირი:
-                <b id="trump-display">
+                <b id="trump">
                     -
                 </b>
             </div>
 
+            <div
+                class="badge"
+            >
+                პარტია:
+                <b id="party-num">
+                    -
+                </b>
+            </div>
 
-            <div class="info-badge">
+            <div
+                class="badge"
+            >
+                ხელი:
+                <b id="hand-index">
+                    -
+                </b>
+            </div>
+
+            <div
+                class="badge"
+            >
                 დასტა:
                 <b id="deck-count">
                     -
@@ -3871,121 +3599,58 @@ button {
 
         </div>
 
-
-        <button
-            class="small-btn"
-            style="
-                width:auto;
-                padding:0 14px
-            "
-            onclick="location.reload()"
-        >
-            გასვლა
-        </button>
-
     </div>
 
-
-    <!-- TESTER -->
-    <div id="tester-control">
-
-        <b>
-            🧪 ტესტერის რეჟიმი
-        </b>
-
-        · მართე მოთამაშე:
-
-        <select
-            id="active-player-select"
-            onchange="switchTesterPlayer()"
-        ></select>
-
-    </div>
-
-
-    <div id="status-msg">
-        ველით მოთამაშეებს...
-    </div>
-
-
-    <!-- TABLE -->
     <div
-        id="game-board"
-        class="game-board"
+        id="status"
+    ></div>
+
+    <div
+        class="table-board"
     >
 
-        <div class="board-logo">
-            BURA VIP
-        </div>
-
         <div
-            class="board-trump"
-            id="board-trump"
+            class="table-logo"
         >
-            ♠
+            BURA
         </div>
 
-        <div id="seats"></div>
+        <div
+            id="players"
+        ></div>
 
         <div
-            id="play-area"
-            class="play-area"
+            id="table-cards"
         ></div>
 
     </div>
 
+    <div
+        class="hand-wrap"
+    >
 
-    <!-- HAND -->
-    <div class="hand-panel">
-
-        <div id="cards-owner-title">
-            ჩემი კარტები
+        <div
+            class="hand-title"
+        >
+            შენი კარტები
         </div>
 
-        <div id="my-cards"></div>
+        <div
+            id="my-cards"
+        ></div>
 
-
-        <div class="action-container">
-
-            <button
-                id="play-btn"
-                class="play-btn"
-                onclick="playSelectedCards()"
-                disabled
-            >
-                ჩამოსვლა
-            </button>
-
-        </div>
+        <button
+            id="play-button"
+            class="play-btn"
+            disabled
+            onclick="playSelectedCards()"
+        >
+            ჩამოსვლა
+        </button>
 
     </div>
 
-
-    <!-- LEADERBOARD -->
-    <div class="leaderboard-box">
-
-        <table class="lb-table">
-
-            <thead>
-
-                <tr id="lb-head">
-
-                    <th>
-                        ხელი
-                    </th>
-
-                </tr>
-
-            </thead>
-
-            <tbody id="lb-body"></tbody>
-
-        </table>
-
-    </div>
-
-</section>
-
+</div>
 
 <script>
 
@@ -3993,1204 +3658,1380 @@ button {
    CLIENT
 ========================================================= */
 
-const socket = io();
+const socket =
+    io();
 
-let myCards = [];
+let token =
+    localStorage.getItem(
+        "bura_token"
+    );
 
-let selectedIndices = [];
+let username =
+    localStorage.getItem(
+        "bura_username"
+    );
 
-let myId = null;
+let balance =
+    localStorage.getItem(
+        "bura_balance"
+    );
 
-let controlledPlayerId = null;
+let currentState =
+    null;
 
-
-/* =========================================================
-   SUITS
-========================================================= */
-
-const SUIT_SYMBOLS = {
-
-    spades:
-        '♠',
-
-    clubs:
-        '♣',
-
-    hearts:
-        '♥',
-
-    diamonds:
-        '♦',
-
-    no_trump:
-        'ბეზი'
-};
-
+let selectedCards =
+    [];
 
 /* =========================================================
-   SEAT POSITIONS
+   INITIAL USER UI
 ========================================================= */
 
-const SEAT_LAYOUTS = {
-
-    2: [
-        'bottom',
-        'top'
-    ],
-
-    3: [
-        'bottom',
-        'top-left',
-        'top-right'
-    ],
-
-    4: [
-        'bottom',
-        'left',
-        'top',
-        'right'
-    ],
-
-    5: [
-        'bottom',
-        'left',
-        'top-left',
-        'top-right',
-        'right'
-    ],
-
-    6: [
-        'bottom',
-        'left',
-        'top-left',
-        'top',
-        'top-right',
-        'right'
-    ]
-};
-
+updateUserUI();
 
 /* =========================================================
-   SOCKET
+   AUTH UI
 ========================================================= */
 
-socket.on(
-    'connect',
-    function() {
+function showLogin() {
 
-        myId =
-            socket.id;
-    }
-);
-
-
-socket.on(
-    'errorMessage',
-    function(msg) {
-
-        alert(msg);
-    }
-);
-
-
-socket.on(
-    'playerLeft',
-    function() {
-
-        alert(
-            'მოთამაშე გავიდა.'
+    document
+        .getElementById(
+            "login-box"
+        )
+        .classList
+        .remove(
+            "hidden"
         );
 
-        location.reload();
-    }
-);
+    document
+        .getElementById(
+            "register-box"
+        )
+        .classList
+        .add(
+            "hidden"
+        );
 
+    document
+        .getElementById(
+            "login-tab"
+        )
+        .classList
+        .add(
+            "active"
+        );
+
+    document
+        .getElementById(
+            "register-tab"
+        )
+        .classList
+        .remove(
+            "active"
+        );
+}
+
+function showRegister() {
+
+    document
+        .getElementById(
+            "register-box"
+        )
+        .classList
+        .remove(
+            "hidden"
+        );
+
+    document
+        .getElementById(
+            "login-box"
+        )
+        .classList
+        .add(
+            "hidden"
+        );
+
+    document
+        .getElementById(
+            "register-tab"
+        )
+        .classList
+        .add(
+            "active"
+        );
+
+    document
+        .getElementById(
+            "login-tab"
+        )
+        .classList
+        .remove(
+            "active"
+        );
+}
 
 /* =========================================================
-   SETUP -> TABLE LOBBY
+   REGISTER
 ========================================================= */
 
-function showTablesLobby() {
+async function registerUser() {
 
-    document
-        .getElementById(
-            'setup-form'
-        )
-        .classList
-        .add('hidden');
+    const usernameInput =
+        document
+            .getElementById(
+                "reg-username"
+            )
+            .value
+            .trim();
 
-    document
-        .getElementById(
-            'tables-lobby'
-        )
-        .classList
-        .remove('hidden');
+    const email =
+        document
+            .getElementById(
+                "reg-email"
+            )
+            .value
+            .trim();
+
+    const password =
+        document
+            .getElementById(
+                "reg-password"
+            )
+            .value;
+
+    setAuthMessage(
+        "რეგისტრაცია...",
+        false
+    );
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/register",
+                {
+
+                    method:
+                        "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body:
+                        JSON.stringify(
+                            {
+
+                                username:
+                                    usernameInput,
+
+                                email,
+
+                                password
+                            }
+                        )
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (
+            !response.ok
+            ||
+            !data.ok
+        ) {
+
+            setAuthMessage(
+                data.message ||
+                "რეგისტრაცია ვერ შესრულდა.",
+                true
+            );
+
+            return;
+        }
+
+        saveLogin(
+            data
+        );
+
+        setAuthMessage(
+            "რეგისტრაცია წარმატებით დასრულდა.",
+            false
+        );
+
+    } catch (err) {
+
+        console.error(
+            err
+        );
+
+        setAuthMessage(
+            "სერვერთან დაკავშირება ვერ მოხერხდა.",
+            true
+        );
+    }
 }
 
+/* =========================================================
+   LOGIN
+========================================================= */
 
-function backToSetup() {
+async function loginUser() {
 
-    document
-        .getElementById(
-            'tables-lobby'
-        )
-        .classList
-        .add('hidden');
+    const usernameInput =
+        document
+            .getElementById(
+                "login-username"
+            )
+            .value
+            .trim();
 
-    document
-        .getElementById(
-            'setup-form'
-        )
-        .classList
-        .remove('hidden');
+    const password =
+        document
+            .getElementById(
+                "login-password"
+            )
+            .value;
+
+    setAuthMessage(
+        "შესვლა...",
+        false
+    );
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/login",
+                {
+
+                    method:
+                        "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body:
+                        JSON.stringify(
+                            {
+
+                                username:
+                                    usernameInput,
+
+                                password
+                            }
+                        )
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (
+            !response.ok
+            ||
+            !data.ok
+        ) {
+
+            setAuthMessage(
+                data.message ||
+                "შესვლა ვერ შესრულდა.",
+                true
+            );
+
+            return;
+        }
+
+        saveLogin(
+            data
+        );
+
+        setAuthMessage(
+            "წარმატებით შეხვედით.",
+            false
+        );
+
+    } catch (err) {
+
+        console.error(
+            err
+        );
+
+        setAuthMessage(
+            "სერვერთან დაკავშირება ვერ მოხერხდა.",
+            true
+        );
+    }
 }
 
+function saveLogin(
+    data
+) {
+
+    token =
+        data.token;
+
+    username =
+        data.username;
+
+    balance =
+        data.balance;
+
+    localStorage.setItem(
+        "bura_token",
+        token
+    );
+
+    localStorage.setItem(
+        "bura_username",
+        username
+    );
+
+    localStorage.setItem(
+        "bura_balance",
+        balance
+    );
+
+    updateUserUI();
+}
+
+function logout() {
+
+    token =
+        null;
+
+    username =
+        null;
+
+    balance =
+        null;
+
+    localStorage.removeItem(
+        "bura_token"
+    );
+
+    localStorage.removeItem(
+        "bura_username"
+    );
+
+    localStorage.removeItem(
+        "bura_balance"
+    );
+
+    updateUserUI();
+
+    setAuthMessage(
+        "ანგარიშიდან გამოხვედი.",
+        false
+    );
+}
+
+function setAuthMessage(
+    text,
+    isError
+) {
+
+    const el =
+        document.getElementById(
+            "auth-message"
+        );
+
+    el.textContent =
+        text;
+
+    el.className =
+        isError
+            ?
+            "message error"
+            :
+            "message";
+}
+
+/* =========================================================
+   USER UI
+========================================================= */
+
+function updateUserUI() {
+
+    const navName =
+        document.getElementById(
+            "nav-username"
+        );
+
+    const navBalance =
+        document.getElementById(
+            "nav-balance"
+        );
+
+    const avatar =
+        document.getElementById(
+            "nav-avatar"
+        );
+
+    const loggedCard =
+        document.getElementById(
+            "logged-user-card"
+        );
+
+    const loggedName =
+        document.getElementById(
+            "logged-name"
+        );
+
+    if (
+        token &&
+        username
+    ) {
+
+        navName.textContent =
+            username;
+
+        navBalance.textContent =
+            "ბალანსი: " +
+            (
+                balance ?? 0
+            );
+
+        avatar.textContent =
+            username
+                .charAt(0)
+                .toUpperCase();
+
+        loggedName.textContent =
+            username;
+
+        loggedCard
+            .classList
+            .remove(
+                "hidden"
+            );
+
+    } else {
+
+        navName.textContent =
+            "სტუმარი";
+
+        navBalance.textContent =
+            "გაიარე რეგისტრაცია";
+
+        avatar.textContent =
+            "G";
+
+        loggedCard
+            .classList
+            .add(
+                "hidden"
+            );
+    }
+}
 
 /* =========================================================
    JOIN TABLE
 ========================================================= */
 
-function joinSelectedTable(stake) {
+function joinTable() {
 
-    const name =
-        document
-            .getElementById(
-                'player-name'
-            )
-            .value
-            .trim() ||
-        'მოთამაშე';
+    if (
+        !token
+    ) {
+
+        setAuthMessage(
+            "ჯერ გაიარე რეგისტრაცია ან შედი ანგარიშზე.",
+            true
+        );
+
+        window.scrollTo({
+            top: 0,
+            behavior: "smooth"
+        });
+
+        return;
+    }
 
     const capacity =
         document
             .getElementById(
-                'player-capacity'
+                "capacity"
             )
             .value;
 
     const parties =
         document
             .getElementById(
-                'player-parties'
+                "parties"
             )
             .value;
 
+    const stake =
+        document
+            .getElementById(
+                "stake"
+            )
+            .value;
+
+    document
+        .getElementById(
+            "waiting-message"
+        )
+        .textContent =
+            "მაგიდას ვეძებთ...";
 
     socket.emit(
-        'joinTable',
+        "joinTable",
         {
-            name:
-                name,
 
-            capacity:
-                capacity,
+            token,
 
-            parties:
-                parties,
+            capacity,
 
-            stake:
-                stake
+            parties,
+
+            stake
         }
     );
-
-
-    const wait =
-        document.getElementById(
-            'lobby-wait-msg'
-        );
-
-    wait.classList.remove(
-        'hidden'
-    );
-
-    wait.innerText =
-        'ველით სხვა მოთამაშეებს...';
 }
 
-
 /* =========================================================
-   WAITING
+   SOCKET EVENTS
 ========================================================= */
 
 socket.on(
-    'waitingForPlayers',
-    function(data) {
+    "waitingForPlayers",
+    data => {
 
-        const wait =
-            document.getElementById(
-                'lobby-wait-msg'
-            );
-
-        if (wait) {
-
-            wait.classList.remove(
-                'hidden'
-            );
-
-            wait.innerText =
-                'ველით მოთამაშეებს: ' +
+        document
+            .getElementById(
+                "waiting-message"
+            )
+            .textContent =
+                "ველოდებით მოთამაშეებს: " +
                 data.current +
-                ' / ' +
+                "/" +
                 data.max;
-        }
     }
 );
 
-
-/* =========================================================
-   GAME STATE
-========================================================= */
-
 socket.on(
-    'gameStateUpdate',
-    function(gs) {
+    "gameStateUpdate",
+    state => {
 
-        document
-            .getElementById(
-                'lobby'
-            )
-            .style
-            .display =
-            'none';
-
-
-        document
-            .getElementById(
-                'game-container'
-            )
-            .style
-            .display =
-            'block';
-
-
-        document
-            .getElementById(
-                'table-stake-disp'
-            )
-            .innerText =
-            gs.stake;
-
-
-        document
-            .getElementById(
-                'party-num'
-            )
-            .innerText =
-            gs.partyNum;
-
-
-        document
-            .getElementById(
-                'target-parties'
-            )
-            .innerText =
-            gs.targetParties;
-
-
-        document
-            .getElementById(
-                'hand-num'
-            )
-            .innerText =
-            gs.handIndex;
-
-
-        document
-            .getElementById(
-                'deck-count'
-            )
-            .innerText =
-            gs.deckCount;
-
-
-        document
-            .getElementById(
-                'trump-display'
-            )
-            .innerText =
-            SUIT_SYMBOLS[
-                gs.trump
-            ] ||
-            gs.trump;
-
-
-        document
-            .getElementById(
-                'board-trump'
-            )
-            .innerText =
-            SUIT_SYMBOLS[
-                gs.trump
-            ] ||
-            '';
-
-
-        const meObj =
-            gs.players.find(
-                function(p) {
-
-                    return p.id ===
-                        myId;
-                }
-            );
-
-
-        /*
-         * TESTER
-         */
         if (
-            meObj &&
-            meObj.isTester
+            !state
         ) {
-
-            document
-                .getElementById(
-                    'tester-control'
-                )
-                .style
-                .display =
-                'block';
-
-
-            const select =
-                document
-                    .getElementById(
-                        'active-player-select'
-                    );
-
-
-            select.innerHTML =
-                '';
-
-
-            gs.players.forEach(
-                function(p) {
-
-                    const opt =
-                        document.createElement(
-                            'option'
-                        );
-
-                    opt.value =
-                        p.id;
-
-                    opt.innerText =
-                        p.name;
-
-
-                    if (
-                        p.id ===
-                        (
-                            controlledPlayerId ||
-                            myId
-                        )
-                    ) {
-
-                        opt.selected =
-                            true;
-                    }
-
-                    select.appendChild(
-                        opt
-                    );
-                }
-            );
-
-
-            if (
-                !controlledPlayerId
-            ) {
-
-                controlledPlayerId =
-                    myId;
-            }
+            return;
         }
 
+        currentState =
+            state;
 
-        const activeTargetId =
-            controlledPlayerId ||
-            myId;
-
-
-        const activePlayer =
-            gs.players[
-                gs.currentTurnIndex
-            ];
-
-
-        const isTargetTurn =
-            activePlayer &&
-            activePlayer.id ===
-            activeTargetId &&
-            !gs.isProcessing &&
-            !gs.gameOver;
-
-
-        /*
-         * STATUS
-         */
-        if (gs.gameOver) {
-
-            const winner =
-                [...gs.players]
-                    .sort(
-                        function(a,b) {
-
-                            return (
-                                b.totalPoints -
-                                a.totalPoints
-                            );
-                        }
-                    )[0];
-
-
-            document
-                .getElementById(
-                    'status-msg'
-                )
-                .innerText =
-                '🏆 თამაში დასრულდა · გამარჯვებულია: ' +
-                winner.name;
-
-        } else if (
-            gs.isProcessing
-        ) {
-
-            document
-                .getElementById(
-                    'status-msg'
-                )
-                .innerText =
-                'ითვლება სლიკი...';
-
-        } else if (
-            isTargetTurn
-        ) {
-
-            document
-                .getElementById(
-                    'status-msg'
-                )
-                .innerText =
-                '🟡 სვლა ეკუთვნის: ' +
-                activePlayer.name;
-
-        } else {
-
-            document
-                .getElementById(
-                    'status-msg'
-                )
-                .innerText =
-                (
-                    activePlayer
-                        ? activePlayer.name
-                        : ''
-                ) +
-                '-ის სვლაა...';
-        }
-
-
-        document
-            .getElementById(
-                'play-btn'
-            )
-            .disabled =
-            !isTargetTurn;
-
-
-        renderSeats(gs);
-
-        renderPlayArea(gs);
-
-
-        myCards =
-            gs.playersCards[
-                activeTargetId
-            ] ||
+        selectedCards =
             [];
 
-
-        selectedIndices =
-            selectedIndices.filter(
-                function(i) {
-
-                    return i <
-                        myCards.length;
-                }
-            );
-
-
-        const targetPlayerObj =
-            gs.players.find(
-                function(p) {
-
-                    return p.id ===
-                        activeTargetId;
-                }
-            );
-
+        document
+            .getElementById(
+                "lobby"
+            )
+            .style
+            .display =
+                "none";
 
         document
             .getElementById(
-                'cards-owner-title'
+                "game"
             )
-            .innerText =
-            (
-                targetPlayerObj
-                    ? targetPlayerObj.name
-                    : 'ჩემი'
-            ) +
-            '-ს კარტები';
+            .style
+            .display =
+                "block";
 
-
-        renderMyCards();
-
-        renderLeaderboardTable(gs);
+        renderGame(
+            state
+        );
     }
 );
 
+socket.on(
+    "errorMessage",
+    message => {
+
+        document
+            .getElementById(
+                "status"
+            )
+            .textContent =
+                message;
+
+        document
+            .getElementById(
+                "waiting-message"
+            )
+            .textContent =
+                message;
+    }
+);
+
+socket.on(
+    "playerLeft",
+    () => {
+
+        document
+            .getElementById(
+                "status"
+            )
+            .textContent =
+                "ერთ-ერთმა მოთამაშემ თამაში დატოვა.";
+    }
+);
 
 /* =========================================================
-   PLAYER SEATS
+   RENDER GAME
 ========================================================= */
 
-function renderSeats(gs) {
+function renderGame(
+    state
+) {
 
-    const wrap =
-        document.getElementById(
-            'seats'
-        );
+    document
+        .getElementById(
+            "trump"
+        )
+        .textContent =
+            trumpName(
+                state.trump
+            );
 
-    wrap.innerHTML =
-        '';
+    document
+        .getElementById(
+            "party-num"
+        )
+        .textContent =
+            state.partyNum +
+            "/" +
+            state.targetParties;
 
+    document
+        .getElementById(
+            "hand-index"
+        )
+        .textContent =
+            state.handIndex;
 
-    const layout =
-        SEAT_LAYOUTS[
-            gs.players.length
-        ] ||
-        SEAT_LAYOUTS[6];
+    document
+        .getElementById(
+            "deck-count"
+        )
+        .textContent =
+            state.deckCount;
 
+    renderPlayers(
+        state
+    );
 
-    gs.players.forEach(
-        function(p,index) {
+    renderTable(
+        state
+    );
+
+    renderMyCards(
+        state
+    );
+
+    updateStatus(
+        state
+    );
+}
+
+/* =========================================================
+   PLAYERS
+========================================================= */
+
+function renderPlayers(
+    state
+) {
+
+    const container =
+        document
+            .getElementById(
+                "players"
+            );
+
+    container.innerHTML =
+        "";
+
+    const count =
+        state.players.length;
+
+    state.players.forEach(
+        (
+            player,
+            index
+        ) => {
 
             const seat =
-                document.createElement(
-                    'div'
-                );
-
-            seat.className =
-                'seat ' +
-                (
-                    layout[index] ||
-                    'top'
-                );
-
-
-            if (p.isCurrent) {
-
-                seat.classList.add(
-                    'active'
-                );
-            }
-
-
-            const card =
-                document.createElement(
-                    'div'
-                );
-
-            card.className =
-                'seat-card';
-
-
-            const head =
-                document.createElement(
-                    'div'
-                );
-
-            head.className =
-                'seat-head';
-
-
-            const av =
-                document.createElement(
-                    'div'
-                );
-
-            av.className =
-                'seat-avatar';
-
-            av.innerText =
-                (
-                    p.name ||
-                    '?'
-                )
-                .charAt(0)
-                .toUpperCase();
-
-
-            const nameBox =
-                document.createElement(
-                    'div'
-                );
-
-
-            nameBox.innerHTML =
-
-                '<div class="seat-name">' +
-                escapeHtml(p.name) +
-                '</div>' +
-
-                '<div class="seat-balance">' +
-                Math.round(p.balance) +
-                ' coins ' +
-
-                (
-                    p.isCurrent
-                        ? '<span class="turn-dot"></span>'
-                        : ''
-                ) +
-
-                '</div>';
-
-
-            head.appendChild(
-                av
-            );
-
-            head.appendChild(
-                nameBox
-            );
-
-            card.appendChild(
-                head
-            );
-
-
-            const backs =
-                document.createElement(
-                    'div'
-                );
-
-            backs.className =
-                'opponent-cards';
-
-
-            const isViewing =
-                p.id ===
-                (
-                    controlledPlayerId ||
-                    myId
-                );
-
-
-            const hand =
-                gs.playersCards[
-                    p.id
-                ];
-
-
-            /*
-             * The controlled player's
-             * actual hand is shown below
-             * the table.
-             */
-            if (
-                isViewing &&
-                hand
-            ) {
-
-                // Do not duplicate hand.
-
-            } else {
-
-                const count =
-                    Math.min(
-                        p.cardCount,
-                        5
+                document
+                    .createElement(
+                        "div"
                     );
 
+            seat.className =
+                "seat" +
+                (
+                    player.isCurrent
+                        ?
+                        " current"
+                        :
+                        ""
+                );
+
+            const pos =
+                seatPosition(
+                    index,
+                    count,
+                    state.viewingPlayerId,
+                    state.players
+                );
+
+            seat.style.left =
+                pos.left + "%";
+
+            seat.style.top =
+                pos.top + "%";
+
+            let backs =
+                "";
+
+            if (
+                player.id !==
+                state.viewingPlayerId
+            ) {
 
                 for (
                     let i = 0;
-                    i < count;
+
+                    i <
+                    player.cardCount;
+
                     i++
                 ) {
 
-                    const back =
-                        document.createElement(
-                            'div'
-                        );
-
-                    back.className =
-                        'back-card';
-
-                    backs.appendChild(
-                        back
-                    );
+                    backs +=
+                        '<div class="card-back"></div>';
                 }
             }
 
+            seat.innerHTML =
+                \`
+                <div class="seat-card">
 
-            card.appendChild(
-                backs
-            );
+                    <div class="seat-avatar">
+                        \${escapeHtml(
+                            player.name
+                                .charAt(0)
+                                .toUpperCase()
+                        )}
+                    </div>
 
-            seat.appendChild(
-                card
-            );
+                    <div class="seat-name">
+                        \${escapeHtml(
+                            player.name
+                        )}
+                    </div>
 
-            wrap.appendChild(
+                    <div class="seat-count">
+                        კარტი:
+                        \${player.cardCount}
+                        · ქულა:
+                        \${player.totalPoints}
+                    </div>
+
+                    <div class="card-backs">
+                        \${backs}
+                    </div>
+
+                </div>
+                \`;
+
+            container.appendChild(
                 seat
             );
         }
     );
 }
 
-
 /* =========================================================
-   CENTER PLAY AREA
+   SEAT POSITION
 ========================================================= */
 
-function renderPlayArea(gs) {
+function seatPosition(
+    playerIndex,
+    playerCount,
+    myId,
+    players
+) {
 
-    const area =
-        document.getElementById(
-            'play-area'
+    let myIndex =
+        players.findIndex(
+            p =>
+                p.id ===
+                myId
         );
 
-    area.innerHTML =
-        '';
+    if (
+        myIndex < 0
+    ) {
+        myIndex =
+            0;
+    }
 
+    const relative =
+        (
+            playerIndex -
+            myIndex +
+            playerCount
+        )
+        %
+        playerCount;
 
-    gs.table.forEach(
-        function(play) {
+    const positions = {
+
+        2: [
+            {
+                left: 50,
+                top: 88
+            },
+            {
+                left: 50,
+                top: 12
+            }
+        ],
+
+        3: [
+            {
+                left: 50,
+                top: 88
+            },
+            {
+                left: 20,
+                top: 25
+            },
+            {
+                left: 80,
+                top: 25
+            }
+        ],
+
+        4: [
+            {
+                left: 50,
+                top: 88
+            },
+            {
+                left: 12,
+                top: 50
+            },
+            {
+                left: 50,
+                top: 12
+            },
+            {
+                left: 88,
+                top: 50
+            }
+        ],
+
+        5: [
+            {
+                left: 50,
+                top: 88
+            },
+            {
+                left: 12,
+                top: 60
+            },
+            {
+                left: 25,
+                top: 18
+            },
+            {
+                left: 75,
+                top: 18
+            },
+            {
+                left: 88,
+                top: 60
+            }
+        ],
+
+        6: [
+            {
+                left: 50,
+                top: 88
+            },
+            {
+                left: 10,
+                top: 64
+            },
+            {
+                left: 18,
+                top: 25
+            },
+            {
+                left: 50,
+                top: 12
+            },
+            {
+                left: 82,
+                top: 25
+            },
+            {
+                left: 90,
+                top: 64
+            }
+        ]
+    };
+
+    return (
+        positions[
+            playerCount
+        ] || positions[2]
+    )[
+        relative
+    ];
+}
+
+/* =========================================================
+   TABLE CARDS
+========================================================= */
+
+function renderTable(
+    state
+) {
+
+    const container =
+        document
+            .getElementById(
+                "table-cards"
+            );
+
+    container.innerHTML =
+        "";
+
+    state.table.forEach(
+        play => {
 
             const group =
-                document.createElement(
-                    'div'
-                );
+                document
+                    .createElement(
+                        "div"
+                    );
 
             group.className =
-                'play-group ' +
+                "play-group" +
                 (
                     play.isWinning
-                        ? 'winning-play'
-                        : ''
+                        ?
+                        " winner"
+                        :
+                        ""
                 );
 
+            const name =
+                document
+                    .createElement(
+                        "div"
+                    );
 
-            const who =
-                document.createElement(
-                    'div'
-                );
+            name.className =
+                "play-name";
 
-            who.className =
-                'play-player';
+            name.textContent =
+                play.playerName;
 
-            who.innerText =
-                play.playerName +
-                (
-                    play.isWinning
-                        ? ' ⭐'
-                        : ''
-                );
-
-
-            const cards =
-                document.createElement(
-                    'div'
-                );
-
-            cards.className =
-                'play-cards';
-
+            group.appendChild(
+                name
+            );
 
             play.cards.forEach(
-                function(c) {
+                card => {
 
-                    cards.appendChild(
-                        renderCardUI(
-                            c,
-                            false,
-                            -1
+                    group.appendChild(
+                        createCardElement(
+                            card,
+                            false
                         )
                     );
                 }
             );
 
-
-            group.appendChild(
-                who
-            );
-
-            group.appendChild(
-                cards
-            );
-
-            area.appendChild(
+            container.appendChild(
                 group
             );
         }
     );
 }
 
-
-/* =========================================================
-   CARD UI
-========================================================= */
-
-function renderCardUI(
-    card,
-    isSelectable,
-    index
-) {
-
-    const div =
-        document.createElement(
-            'div'
-        );
-
-    div.className =
-        'card suit-' +
-        card.suit;
-
-
-    if (
-        selectedIndices.includes(
-            index
-        )
-    ) {
-
-        div.classList.add(
-            'selected'
-        );
-    }
-
-
-    const symbol =
-        SUIT_SYMBOLS[
-            card.suit
-        ] ||
-        '';
-
-
-    div.innerHTML =
-
-        '<div class="rank-top">' +
-        card.rank +
-        '</div>' +
-
-        '<div class="suit-center">' +
-        symbol +
-        '</div>' +
-
-        '<div class="rank-bottom">' +
-        card.rank +
-        '</div>';
-
-
-    if (isSelectable) {
-
-        div.onclick =
-            function() {
-
-                if (
-                    selectedIndices.includes(
-                        index
-                    )
-                ) {
-
-                    selectedIndices =
-                        selectedIndices.filter(
-                            function(i) {
-
-                                return i !==
-                                    index;
-                            }
-                        );
-
-                } else {
-
-                    selectedIndices.push(
-                        index
-                    );
-                }
-
-
-                renderMyCards();
-            };
-    }
-
-
-    return div;
-}
-
-
 /* =========================================================
    MY CARDS
 ========================================================= */
 
-function renderMyCards() {
+function renderMyCards(
+    state
+) {
 
-    const cardsDiv =
-        document.getElementById(
-            'my-cards'
-        );
+    const container =
+        document
+            .getElementById(
+                "my-cards"
+            );
 
-    cardsDiv.innerHTML =
-        '';
+    container.innerHTML =
+        "";
 
+    const myCards =
+        state.playersCards[
+            state.viewingPlayerId
+        ] || [];
 
     myCards.forEach(
-        function(c,i) {
+        (
+            card,
+            index
+        ) => {
 
-            cardsDiv.appendChild(
-                renderCardUI(
-                    c,
-                    true,
-                    i
-                )
+            const element =
+                createCardElement(
+                    card,
+                    true
+                );
+
+            element.onclick =
+                () =>
+                    toggleCard(
+                        index,
+                        element
+                    );
+
+            container.appendChild(
+                element
             );
         }
     );
-}
 
-
-/* =========================================================
-   TESTER PLAYER SWITCH
-========================================================= */
-
-function switchTesterPlayer() {
-
-    controlledPlayerId =
-        document
-            .getElementById(
-                'active-player-select'
-            )
-            .value;
-
-
-    selectedIndices =
-        [];
-
-
-    socket.emit(
-        'switchControlledPlayer',
-        {
-            targetPlayerId:
-                controlledPlayerId
-        }
+    updatePlayButton(
+        state
     );
 }
 
+/* =========================================================
+   CARD HTML
+========================================================= */
+
+function createCardElement(
+    card,
+    interactive
+) {
+
+    const div =
+        document
+            .createElement(
+                "div"
+            );
+
+    const red =
+        card.suit ===
+        "hearts"
+        ||
+        card.suit ===
+        "diamonds";
+
+    div.className =
+        "card" +
+        (
+            red
+                ?
+                " red"
+                :
+                ""
+        );
+
+    div.innerHTML =
+        \`
+        <div class="card-rank">
+            \${escapeHtml(
+                card.rank
+            )}
+            \${suitSymbol(
+                card.suit
+            )}
+        </div>
+
+        <div class="card-suit">
+            \${suitSymbol(
+                card.suit
+            )}
+        </div>
+
+        <div class="card-bottom">
+            \${escapeHtml(
+                card.rank
+            )}
+            \${suitSymbol(
+                card.suit
+            )}
+        </div>
+        \`;
+
+    return div;
+}
 
 /* =========================================================
-   PLAY
+   SELECT
 ========================================================= */
+
+function toggleCard(
+    index,
+    element
+) {
+
+    const existing =
+        selectedCards
+            .indexOf(
+                index
+            );
+
+    if (
+        existing >= 0
+    ) {
+
+        selectedCards.splice(
+            existing,
+            1
+        );
+
+        element
+            .classList
+            .remove(
+                "selected"
+            );
+
+    } else {
+
+        selectedCards.push(
+            index
+        );
+
+        element
+            .classList
+            .add(
+                "selected"
+            );
+    }
+
+    updatePlayButton(
+        currentState
+    );
+}
+
+/* =========================================================
+   PLAY BUTTON
+========================================================= */
+
+function updatePlayButton(
+    state
+) {
+
+    const button =
+        document
+            .getElementById(
+                "play-button"
+            );
+
+    if (
+        !state
+    ) {
+
+        button.disabled =
+            true;
+
+        return;
+    }
+
+    const activePlayer =
+        state.players[
+            state.currentTurnIndex
+        ];
+
+    const myTurn =
+        activePlayer
+        &&
+        activePlayer.id ===
+        state.viewingPlayerId;
+
+    button.disabled =
+        !myTurn
+        ||
+        selectedCards.length ===
+        0
+        ||
+        state.isProcessing;
+}
 
 function playSelectedCards() {
 
     if (
-        selectedIndices.length ===
+        selectedCards.length ===
         0
     ) {
         return;
     }
 
-
     socket.emit(
-        'playCards',
+        "playCards",
         {
 
             cardIndices:
-                selectedIndices,
-
-            targetPlayerId:
-                controlledPlayerId ||
-                myId
+                selectedCards
         }
     );
 
-
-    selectedIndices =
+    selectedCards =
         [];
 }
 
-
 /* =========================================================
-   LEADERBOARD
+   STATUS
 ========================================================= */
 
-function renderLeaderboardTable(gs) {
+function updateStatus(
+    state
+) {
 
-    const head =
-        document.getElementById(
-            'lb-head'
-        );
-
-    const body =
-        document.getElementById(
-            'lb-body'
-        );
-
-
-    head.innerHTML =
-        '<th>ხელი</th>';
-
-
-    gs.players.forEach(
-        function(p) {
-
-            const th =
-                document.createElement(
-                    'th'
-                );
-
-            th.innerText =
-                p.name;
-
-            head.appendChild(
-                th
-            );
-        }
-    );
-
-
-    body.innerHTML =
-        '';
-
-
-    gs.roundHistory.forEach(
-        function(row) {
-
-            const tr =
-                document.createElement(
-                    'tr'
-                );
-
-
-            tr.innerHTML =
-                '<td style="' +
-                'color:#f4c542;' +
-                'font-weight:900' +
-                '">' +
-                '#' +
-                row.handIndex +
-                '</td>';
-
-
-            gs.players.forEach(
-                function(p) {
-
-                    const td =
-                        document.createElement(
-                            'td'
-                        );
-
-
-                    const pts =
-                        row.scores[p.id] !==
-                        undefined
-                            ? row.scores[p.id]
-                            : 0;
-
-
-                    td.innerText =
-                        pts === 0
-                            ? '-120'
-                            : pts;
-
-
-                    tr.appendChild(
-                        td
-                    );
-                }
+    const status =
+        document
+            .getElementById(
+                "status"
             );
 
+    if (
+        state.gameOver
+    ) {
 
-            body.appendChild(
-                tr
-            );
-        }
-    );
+        status.textContent =
+            "თამაში დასრულებულია.";
 
+        return;
+    }
 
-    const sum =
-        document.createElement(
-            'tr'
-        );
+    if (
+        state.isProcessing
+    ) {
 
+        status.textContent =
+            "სვლა დასრულდა...";
 
-    sum.innerHTML =
-        '<td style="' +
-        'color:#f4c542;' +
-        'font-weight:900' +
-        '">' +
-        'ჯამი' +
-        '</td>';
+        return;
+    }
 
+    const activePlayer =
+        state.players[
+            state.currentTurnIndex
+        ];
 
-    gs.players.forEach(
-        function(p) {
+    if (
+        !activePlayer
+    ) {
+        return;
+    }
 
-            const td =
-                document.createElement(
-                    'td'
-                );
+    if (
+        activePlayer.id ===
+        state.viewingPlayerId
+    ) {
 
-            td.innerText =
-                p.totalPoints;
+        status.textContent =
+            "შენი სვლაა!";
 
-            td.style.fontWeight =
-                '900';
+    } else {
 
-            sum.appendChild(
-                td
-            );
-        }
-    );
+        status.textContent =
+            activePlayer.name +
+            "-ის სვლაა";
+    }
+}
 
+/* =========================================================
+   HELPERS
+========================================================= */
 
-    body.appendChild(
-        sum
+function suitSymbol(
+    suit
+) {
+
+    const map = {
+
+        spades:
+            "♠",
+
+        clubs:
+            "♣",
+
+        hearts:
+            "♥",
+
+        diamonds:
+            "♦"
+    };
+
+    return (
+        map[suit] ||
+        ""
     );
 }
 
+function trumpName(
+    trump
+) {
 
-/* =========================================================
-   HTML ESCAPE
-========================================================= */
+    if (
+        trump ===
+        "no_trump"
+    ) {
+        return "უკოზირო";
+    }
 
-function escapeHtml(value) {
+    return suitSymbol(
+        trump
+    );
+}
 
-    return String(value)
+function escapeHtml(
+    text
+) {
+
+    return String(
+        text ?? ""
+    )
         .replace(
-            /[&<>"']/g,
-            function(c) {
-
-                return {
-
-                    '&':
-                        '&amp;',
-
-                    '<':
-                        '&lt;',
-
-                    '>':
-                        '&gt;',
-
-                    '"':
-                        '&quot;',
-
-                    "'":
-                        '&#039;'
-
-                }[c];
-            }
+            /&/g,
+            "&amp;"
+        )
+        .replace(
+            /</g,
+            "&lt;"
+        )
+        .replace(
+            />/g,
+            "&gt;"
+        )
+        .replace(
+            /"/g,
+            "&quot;"
+        )
+        .replace(
+            /'/g,
+            "&#039;"
         );
 }
 
@@ -5199,18 +5040,26 @@ function escapeHtml(value) {
 </body>
 
 </html>
-    `);
-});
+        `);
+    }
+);
 
+/* =========================================================
+   START SERVER
+========================================================= */
 
 server.listen(
     PORT,
-    '0.0.0.0',
     () => {
 
         console.log(
-            'Server running on port ' +
+            "BURA VIP CLUB running on port " +
             PORT
+        );
+
+        console.log(
+            "Deck cards:",
+            createDeck().length
         );
     }
 );
