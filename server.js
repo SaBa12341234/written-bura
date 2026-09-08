@@ -19,10 +19,17 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 
 /* =========================================================
-   USERS / REGISTRATION
+   CONFIG
 ========================================================= */
 
+const TESTER_USERNAME = "saba123";
+const STARTING_BALANCE = 1000;
+
 const USERS_FILE = path.join(__dirname, "users.json");
+
+/* =========================================================
+   USERS
+========================================================= */
 
 let users = [];
 
@@ -33,7 +40,7 @@ try {
         );
     }
 } catch (err) {
-    console.error("users.json read error:", err);
+    console.error("users.json error:", err);
     users = [];
 }
 
@@ -44,9 +51,21 @@ function saveUsers() {
             JSON.stringify(users, null, 2)
         );
     } catch (err) {
-        console.error("users.json save error:", err);
+        console.error("users save error:", err);
     }
 }
+
+/*
+    ჯერჯერობით ყველას სატესტოდ $1000.
+*/
+users.forEach(user => {
+    user.balance = STARTING_BALANCE;
+});
+
+saveUsers();
+
+const sessions = new Map();
+const testerSessions = new Set();
 
 function normalizeUsername(username) {
     return String(username || "").trim();
@@ -56,6 +75,13 @@ function normalizeEmail(email) {
     return String(email || "")
         .trim()
         .toLowerCase();
+}
+
+function isTesterUsername(username) {
+    return (
+        normalizeUsername(username).toLowerCase() ===
+        TESTER_USERNAME.toLowerCase()
+    );
 }
 
 function hashPassword(password, salt) {
@@ -69,8 +95,6 @@ function createToken() {
         .randomBytes(32)
         .toString("hex");
 }
-
-const sessions = new Map();
 
 /* =========================================================
    REGISTER
@@ -86,6 +110,14 @@ app.post("/api/register", (req, res) => {
 
     const password =
         String(req.body.password || "");
+
+    if (isTesterUsername(username)) {
+        return res.status(400).json({
+            ok: false,
+            message:
+                "saba123 დაცულია სატესტო რეჟიმისთვის."
+        });
+    }
 
     if (
         username.length < 3 ||
@@ -164,7 +196,10 @@ app.post("/api/register", (req, res) => {
             .toString("hex");
 
     const passwordHash =
-        hashPassword(password, salt);
+        hashPassword(
+            password,
+            salt
+        );
 
     const user = {
         id:
@@ -176,11 +211,15 @@ app.post("/api/register", (req, res) => {
             ),
 
         username,
+
         email,
+
         salt,
+
         passwordHash,
 
-        balance: 100,
+        balance:
+            STARTING_BALANCE,
 
         createdAt:
             new Date().toISOString()
@@ -198,14 +237,15 @@ app.post("/api/register", (req, res) => {
         user.id
     );
 
-    res.json({
+    return res.json({
         ok: true,
         token,
         username:
             user.username,
-
         balance:
-            user.balance
+            user.balance,
+        isTester:
+            false
     });
 });
 
@@ -224,6 +264,37 @@ app.post("/api/login", (req, res) => {
         String(
             req.body.password || ""
         );
+
+    /*
+        TEST MODE:
+        saba123-ს არ სჭირდება რეგისტრაცია
+        და არც პაროლი.
+    */
+
+    if (
+        isTesterUsername(
+            username
+        )
+    ) {
+
+        const token =
+            createToken();
+
+        testerSessions.add(
+            token
+        );
+
+        return res.json({
+            ok: true,
+            token,
+            username:
+                TESTER_USERNAME,
+            balance:
+                STARTING_BALANCE,
+            isTester:
+                true
+        });
+    }
 
     const user =
         users.find(
@@ -257,6 +328,11 @@ app.post("/api/login", (req, res) => {
         });
     }
 
+    user.balance =
+        STARTING_BALANCE;
+
+    saveUsers();
+
     const token =
         createToken();
 
@@ -265,14 +341,15 @@ app.post("/api/login", (req, res) => {
         user.id
     );
 
-    res.json({
+    return res.json({
         ok: true,
         token,
         username:
             user.username,
-
         balance:
-            user.balance
+            user.balance,
+        isTester:
+            false
     });
 });
 
@@ -286,6 +363,23 @@ function getUserByToken(token) {
         return null;
     }
 
+    if (
+        testerSessions.has(
+            token
+        )
+    ) {
+        return {
+            id:
+                "tester_saba123",
+            username:
+                TESTER_USERNAME,
+            balance:
+                STARTING_BALANCE,
+            isTester:
+                true
+        };
+    }
+
     const userId =
         sessions.get(token);
 
@@ -293,19 +387,28 @@ function getUserByToken(token) {
         return null;
     }
 
-    return (
+    const user =
         users.find(
             u =>
                 u.id === userId
-        ) || null
-    );
+        );
+
+    if (!user) {
+        return null;
+    }
+
+    return {
+        ...user,
+        isTester:
+            false
+    };
 }
 
 /* =========================================================
-   GAME CONSTANTS
+   GAME CONFIG
 
-   36 CARDS:
-   6 7 8 9 J Q K 10 A
+   36 კარტი:
+   6,7,8,9,J,Q,K,10,A
 ========================================================= */
 
 const CARD_VALUES = {
@@ -374,19 +477,15 @@ const TRUMP_ROTATION = [
     "no_trump"
 ];
 
-/* =========================================================
-   ROOMS
-========================================================= */
-
 let rooms = {};
 
 /* =========================================================
-   CREATE 36 CARD DECK
+   DECK
 ========================================================= */
 
 function createDeck() {
 
-    let deck = [];
+    const deck = [];
 
     for (
         const suit of SUITS
@@ -397,14 +496,8 @@ function createDeck() {
         ) {
 
             deck.push({
-
-                id:
-                    `${suit}_${rank}_${Math.random()}`,
-
                 rank,
-
                 suit,
-
                 value:
                     CARD_VALUES[rank]
             });
@@ -412,7 +505,7 @@ function createDeck() {
     }
 
     /*
-        9 ranks x 4 suits = 36 cards
+        9 × 4 = 36
     */
 
     for (
@@ -443,7 +536,7 @@ function createDeck() {
 }
 
 /* =========================================================
-   CREATE ROOM
+   ROOM
 ========================================================= */
 
 function createRoom(
@@ -459,13 +552,19 @@ function createRoom(
             roomId,
 
         maxPlayers:
-            Number(maxPlayers),
+            Number(
+                maxPlayers
+            ),
 
         targetParties:
-            Number(targetParties),
+            Number(
+                targetParties
+            ),
 
         stake:
-            Number(stake),
+            Number(
+                stake
+            ),
 
         players: [],
 
@@ -475,7 +574,7 @@ function createRoom(
 }
 
 /* =========================================================
-   START HAND
+   NEW HAND
 ========================================================= */
 
 function startNewHand(
@@ -487,9 +586,7 @@ function startNewHand(
         createDeck();
 
     const playersCards = {};
-
     const takenCards = {};
-
     const totalScores = {};
 
     room.players.forEach(
@@ -654,10 +751,6 @@ function cardBeatsCard(
     return false;
 }
 
-/* =========================================================
-   PLAY COMPARISON
-========================================================= */
-
 function beatsPlay(
     leadPlay,
     challengePlay,
@@ -670,7 +763,7 @@ function beatsPlay(
     const challengeCards =
         challengePlay.cards;
 
-    const isMaliutka =
+    const challengeMaliutka =
         challengeCards.length === 5 &&
         challengeCards.every(
             card =>
@@ -679,7 +772,7 @@ function beatsPlay(
         );
 
     if (
-        isMaliutka &&
+        challengeMaliutka &&
         leadCards.length < 5
     ) {
         return true;
@@ -732,17 +825,12 @@ function beatsPlay(
                 trump
             )
         ) {
-
             return false;
         }
     }
 
     return true;
 }
-
-/* =========================================================
-   WINNING PLAY
-========================================================= */
 
 function getWinningPlayIndex(
     table,
@@ -777,7 +865,6 @@ function getWinningPlayIndex(
                 trump
             )
         ) {
-
             winningIndex =
                 i;
         }
@@ -787,7 +874,7 @@ function getWinningPlayIndex(
 }
 
 /* =========================================================
-   PERSONAL GAME STATE
+   CLIENT STATE
 ========================================================= */
 
 function getClientGameState(
@@ -813,79 +900,75 @@ function getClientGameState(
             (
                 player,
                 index
-            ) => {
+            ) => ({
+                id:
+                    player.id,
 
-                return {
+                name:
+                    player.name,
 
-                    id:
-                        player.id,
+                balance:
+                    player.balance,
 
-                    name:
-                        player.name,
+                isBot:
+                    !!player.isBot,
 
-                    balance:
-                        player.balance,
+                isTester:
+                    !!player.isTester,
 
-                    cardCount:
+                cardCount:
+                    gs.playersCards[
+                        player.id
+                    ]
+                        ?
                         gs.playersCards[
                             player.id
-                        ]
-                            ?
-                            gs.playersCards[
-                                player.id
-                            ].length
-                            :
-                            0,
+                        ].length
+                        :
+                        0,
 
-                    takenCount:
+                takenCount:
+                    gs.takenCards[
+                        player.id
+                    ]
+                        ?
                         gs.takenCards[
                             player.id
-                        ]
-                            ?
-                            gs.takenCards[
-                                player.id
-                            ].length
-                            :
-                            0,
+                        ].length
+                        :
+                        0,
 
-                    handPoints:
+                handPoints:
+                    gs.takenCards[
+                        player.id
+                    ]
+                        ?
                         gs.takenCards[
                             player.id
-                        ]
-                            ?
-                            gs.takenCards[
-                                player.id
-                            ].reduce(
-                                (
-                                    sum,
-                                    card
-                                ) =>
-                                    sum +
-                                    card.value,
-                                0
-                            )
-                            :
-                            0,
+                        ].reduce(
+                            (
+                                sum,
+                                card
+                            ) =>
+                                sum +
+                                card.value,
+                            0
+                        )
+                        :
+                        0,
 
-                    totalPoints:
-                        gs.totalScores[
-                            player.id
-                        ] || 0,
+                totalPoints:
+                    gs.totalScores[
+                        player.id
+                    ] || 0,
 
-                    isCurrent:
-                        index ===
-                        gs.currentTurnIndex
-                };
-            }
+                isCurrent:
+                    index ===
+                    gs.currentTurnIndex
+            })
         );
 
     const visibleCards = {};
-
-    /*
-        IMPORTANT:
-        მხოლოდ თავისი კარტები
-        ეგზავნება მოთამაშეს.
-    */
 
     if (
         forPlayerId &&
@@ -910,7 +993,6 @@ function getClientGameState(
                     play,
                     index
                 ) => ({
-
                     ...play,
 
                     isWinning:
@@ -959,12 +1041,6 @@ function getClientGameState(
     };
 }
 
-/* =========================================================
-   BROADCAST PERSONAL STATE
-
-   THIS FIXES INVISIBLE CARDS
-========================================================= */
-
 function broadcastGameState(
     room
 ) {
@@ -988,6 +1064,185 @@ function broadcastGameState(
                 )
             );
         }
+    );
+}
+
+/* =========================================================
+   DEAL AFTER TRICK
+========================================================= */
+
+function refillHands(
+    room,
+    winnerIndex
+) {
+
+    const gs =
+        room.gameState;
+
+    while (
+        gs.deck.length >
+        0
+    ) {
+
+        let dealt =
+            false;
+
+        for (
+            let step = 0;
+
+            step <
+            room.players.length;
+
+            step++
+        ) {
+
+            const playerIndex =
+                (
+                    winnerIndex +
+                    step
+                )
+                %
+                room.players.length;
+
+            const player =
+                room.players[
+                    playerIndex
+                ];
+
+            const hand =
+                gs.playersCards[
+                    player.id
+                ];
+
+            if (
+                hand.length <
+                5 &&
+                gs.deck.length >
+                0
+            ) {
+
+                hand.push(
+                    gs.deck.pop()
+                );
+
+                dealt =
+                    true;
+            }
+        }
+
+        if (!dealt) {
+            break;
+        }
+    }
+}
+
+/* =========================================================
+   FINISH TRICK
+========================================================= */
+
+function completeTrick(
+    room
+) {
+
+    const gs =
+        room.gameState;
+
+    const winningIndex =
+        getWinningPlayIndex(
+            gs.table,
+            gs.trump
+        );
+
+    const winningPlay =
+        gs.table[
+            winningIndex
+        ];
+
+    if (!winningPlay) {
+        return;
+    }
+
+    const winnerId =
+        winningPlay.playerId;
+
+    const allCards = [];
+
+    gs.table.forEach(
+        play =>
+            allCards.push(
+                ...play.cards
+            )
+    );
+
+    gs.takenCards[
+        winnerId
+    ].push(
+        ...allCards
+    );
+
+    const winnerPlayerIndex =
+        room.players.findIndex(
+            player =>
+                player.id ===
+                winnerId
+        );
+
+    gs.currentTurnIndex =
+        winnerPlayerIndex;
+
+    gs.isProcessing =
+        true;
+
+    broadcastGameState(
+        room
+    );
+
+    setTimeout(
+        () => {
+
+            gs.table = [];
+
+            gs.leadCardCount =
+                null;
+
+            refillHands(
+                room,
+                winnerPlayerIndex
+            );
+
+            const allHandsEmpty =
+                room.players.every(
+                    player =>
+                        gs.playersCards[
+                            player.id
+                        ].length ===
+                        0
+                );
+
+            gs.isProcessing =
+                false;
+
+            if (
+                allHandsEmpty
+            ) {
+
+                finishHand(
+                    room
+                );
+
+            } else {
+
+                broadcastGameState(
+                    room
+                );
+
+                scheduleBotTurn(
+                    room
+                );
+            }
+
+        },
+        1100
     );
 }
 
@@ -1066,7 +1321,6 @@ function finishHand(
     );
 
     gs.roundHistory.push({
-
         handIndex:
             gs.handIndex,
 
@@ -1098,8 +1352,10 @@ function finishHand(
 
     const nextLeaderIndex =
         (
-            minPlayerIndex + 1
-        ) %
+            minPlayerIndex +
+            1
+        )
+        %
         room.players.length;
 
     gs.nextRoundLeaderIndex =
@@ -1114,10 +1370,242 @@ function finishHand(
     broadcastGameState(
         room
     );
+
+    scheduleBotTurn(
+        room
+    );
 }
 
 /* =========================================================
-   SOCKET.IO
+   BOT LOGIC
+========================================================= */
+
+function chooseBotCards(
+    room,
+    bot
+) {
+
+    const gs =
+        room.gameState;
+
+    const cards =
+        gs.playersCards[
+            bot.id
+        ] || [];
+
+    if (
+        cards.length === 0
+    ) {
+        return [];
+    }
+
+    /*
+        თუ ბოტი პირველი ჩამოდის,
+        ვცდილობთ ერთ კარტს.
+    */
+
+    if (
+        gs.table.length ===
+        0
+    ) {
+
+        return [0];
+    }
+
+    const required =
+        Math.min(
+            gs.leadCardCount || 1,
+            cards.length
+        );
+
+    return Array.from(
+        {
+            length:
+                required
+        },
+        (
+            _,
+            index
+        ) =>
+            index
+    );
+}
+
+function scheduleBotTurn(
+    room
+) {
+
+    if (
+        !room ||
+        !room.gameState
+    ) {
+        return;
+    }
+
+    const gs =
+        room.gameState;
+
+    if (
+        gs.gameOver ||
+        gs.isProcessing
+    ) {
+        return;
+    }
+
+    const activePlayer =
+        room.players[
+            gs.currentTurnIndex
+        ];
+
+    if (
+        !activePlayer ||
+        !activePlayer.isBot
+    ) {
+        return;
+    }
+
+    setTimeout(
+        () => {
+
+            playBotTurn(
+                room,
+                activePlayer
+            );
+
+        },
+        650
+    );
+}
+
+function playBotTurn(
+    room,
+    bot
+) {
+
+    const gs =
+        room.gameState;
+
+    if (
+        !gs ||
+        gs.gameOver ||
+        gs.isProcessing
+    ) {
+        return;
+    }
+
+    const activePlayer =
+        room.players[
+            gs.currentTurnIndex
+        ];
+
+    if (
+        !activePlayer ||
+        activePlayer.id !==
+        bot.id
+    ) {
+        return;
+    }
+
+    const playerCards =
+        gs.playersCards[
+            bot.id
+        ];
+
+    if (
+        !playerCards ||
+        playerCards.length ===
+        0
+    ) {
+        return;
+    }
+
+    const cardIndices =
+        chooseBotCards(
+            room,
+            bot
+        );
+
+    const selectedCards =
+        cardIndices
+            .map(
+                index =>
+                    playerCards[
+                        index
+                    ]
+            )
+            .filter(Boolean);
+
+    if (
+        selectedCards.length ===
+        0
+    ) {
+        return;
+    }
+
+    if (
+        gs.table.length ===
+        0
+    ) {
+
+        gs.leadCardCount =
+            selectedCards.length;
+    }
+
+    gs.playersCards[
+        bot.id
+    ] =
+        playerCards.filter(
+            (
+                _,
+                index
+            ) =>
+                !cardIndices.includes(
+                    index
+                )
+        );
+
+    gs.table.push({
+        playerId:
+            bot.id,
+
+        playerName:
+            bot.name,
+
+        cards:
+            selectedCards
+    });
+
+    if (
+        gs.table.length <
+        room.players.length
+    ) {
+
+        gs.currentTurnIndex =
+            (
+                gs.currentTurnIndex +
+                1
+            )
+            %
+            room.players.length;
+
+        broadcastGameState(
+            room
+        );
+
+        scheduleBotTurn(
+            room
+        );
+
+        return;
+    }
+
+    completeTrick(
+        room
+    );
+}
+
+/* =========================================================
+   SOCKET
 ========================================================= */
 
 io.on(
@@ -1125,7 +1613,7 @@ io.on(
     socket => {
 
         console.log(
-            "connected:",
+            "Connected:",
             socket.id
         );
 
@@ -1152,34 +1640,63 @@ io.on(
                     return;
                 }
 
-                const capacity =
-                    Math.max(
-                        2,
-                        Math.min(
-                            6,
-                            parseInt(
-                                data.capacity
-                            ) || 2
-                        )
+                let capacity =
+                    parseInt(
+                        data.capacity
                     );
+
+                /*
+                    მხოლოდ 3 ან 4
+                */
+
+                if (
+                    capacity !== 3 &&
+                    capacity !== 4
+                ) {
+
+                    capacity =
+                        3;
+                }
 
                 const parties =
                     Math.max(
                         1,
-                        parseInt(
-                            data.parties
-                        ) || 1
+                        Math.min(
+                            3,
+                            parseInt(
+                                data.parties
+                            ) || 1
+                        )
                     );
 
-                const stake =
-                    Math.max(
-                        0,
-                        parseFloat(
-                            data.stake
-                        ) || 1
+                const allowedStakes =
+                    [
+                        5,
+                        10,
+                        25,
+                        50,
+                        100
+                    ];
+
+                let stake =
+                    parseFloat(
+                        data.stake
                     );
 
                 if (
+                    !allowedStakes.includes(
+                        stake
+                    )
+                ) {
+                    stake =
+                        5;
+                }
+
+                const isTester =
+                    !!user.isTester;
+
+                if (
+                    !isTester &&
                     user.balance <
                     stake
                 ) {
@@ -1192,34 +1709,40 @@ io.on(
                     return;
                 }
 
-                /*
-                    ერთი socket ერთ მაგიდაზე.
-                */
-
                 if (
                     socket.roomId
                 ) {
+
+                    socket.emit(
+                        "errorMessage",
+                        "უკვე მაგიდაზე ხარ."
+                    );
+
                     return;
                 }
+
+                /*
+                    შესაბამისი waiting room
+                */
 
                 let room =
                     Object.values(
                         rooms
                     ).find(
-                        r =>
-                            r.maxPlayers ===
+                        room =>
+                            room.maxPlayers ===
                             capacity
                             &&
-                            r.targetParties ===
+                            room.targetParties ===
                             parties
                             &&
-                            r.stake ===
+                            room.stake ===
                             stake
                             &&
-                            r.players.length <
-                            r.maxPlayers
+                            room.players.length <
+                            room.maxPlayers
                             &&
-                            !r.gameState
+                            !room.gameState
                     );
 
                 if (!room) {
@@ -1247,47 +1770,50 @@ io.on(
                         room;
                 }
 
-                /*
-                    ერთი username ორჯერ
-                    ერთ ოთახში არ მოხვდეს.
-                */
-
-                const alreadyInRoom =
-                    room.players.some(
-                        p =>
-                            p.userId ===
-                            user.id
-                    );
-
-                if (
-                    alreadyInRoom
-                ) {
-
-                    socket.emit(
-                        "errorMessage",
-                        "ეს მომხმარებელი უკვე მაგიდაზეა."
-                    );
-
-                    return;
-                }
-
                 socket.roomId =
                     room.id;
 
                 socket.userId =
                     user.id;
 
+                socket.isTester =
+                    isTester;
+
                 socket.join(
                     room.id
                 );
 
-                user.balance -=
-                    stake;
+                let playerBalance =
+                    STARTING_BALANCE;
 
-                saveUsers();
+                /*
+                    ჩვეულებრივ მოთამაშეს
+                    ფსონი აკლდება.
+                    სატესტოს არა.
+                */
+
+                if (!isTester) {
+
+                    const realUser =
+                        users.find(
+                            u =>
+                                u.id ===
+                                user.id
+                        );
+
+                    if (realUser) {
+
+                        realUser.balance -=
+                            stake;
+
+                        playerBalance =
+                            realUser.balance;
+
+                        saveUsers();
+                    }
+                }
 
                 room.players.push({
-
                     id:
                         socket.id,
 
@@ -1298,16 +1824,66 @@ io.on(
                         user.username,
 
                     balance:
-                        user.balance,
+                        playerBalance,
 
                     isBot:
-                        false
+                        false,
+
+                    isTester:
+                        isTester
                 });
 
                 /*
-                    როცა მაგიდა შეივსება
-                    თამაში ავტომატურად იწყება.
+                    TESTER:
+                    ცარიელ ადგილებს მაშინვე
+                    ავსებს ბოტებით.
                 */
+
+                if (isTester) {
+
+                    let botNumber =
+                        1;
+
+                    while (
+                        room.players.length <
+                        room.maxPlayers
+                    ) {
+
+                        const botId =
+                            "bot_" +
+                            Date.now() +
+                            "_" +
+                            botNumber +
+                            "_" +
+                            Math.floor(
+                                Math.random() *
+                                10000
+                            );
+
+                        room.players.push({
+                            id:
+                                botId,
+
+                            userId:
+                                botId,
+
+                            name:
+                                "BOT " +
+                                botNumber,
+
+                            balance:
+                                STARTING_BALANCE,
+
+                            isBot:
+                                true,
+
+                            isTester:
+                                false
+                        });
+
+                        botNumber++;
+                    }
+                }
 
                 if (
                     room.players.length ===
@@ -1319,13 +1895,11 @@ io.on(
                             room
                         );
 
-                    /*
-                        IMPORTANT FIX:
-                        ყველა მოთამაშეს პირადად
-                        თავისი კარტები ეგზავნება.
-                    */
-
                     broadcastGameState(
+                        room
+                    );
+
+                    scheduleBotTurn(
                         room
                     );
 
@@ -1336,13 +1910,14 @@ io.on(
                     ).emit(
                         "waitingForPlayers",
                         {
-
                             current:
-                                room.players
-                                    .length,
+                                room.players.length,
 
                             max:
-                                room.maxPlayers
+                                room.maxPlayers,
+
+                            stake:
+                                room.stake
                         }
                     );
                 }
@@ -1358,8 +1933,7 @@ io.on(
             data => {
 
                 if (
-                    !socket.roomId
-                    ||
+                    !socket.roomId ||
                     !rooms[
                         socket.roomId
                     ]
@@ -1376,10 +1950,8 @@ io.on(
                     room.gameState;
 
                 if (
-                    !gs
-                    ||
-                    gs.isProcessing
-                    ||
+                    !gs ||
+                    gs.isProcessing ||
                     gs.gameOver
                 ) {
                     return;
@@ -1391,8 +1963,7 @@ io.on(
                     ];
 
                 if (
-                    !activePlayer
-                    ||
+                    !activePlayer ||
                     activePlayer.id !==
                     socket.id
                 ) {
@@ -1410,22 +1981,29 @@ io.on(
                         socket.id
                     ];
 
-                if (
-                    !playerCards
-                ) {
+                if (!playerCards) {
                     return;
                 }
 
-                const cardIndices =
+                let cardIndices =
                     Array.isArray(
                         data.cardIndices
                     )
                         ?
-                        [...new Set(
-                            data.cardIndices
-                        )]
+                        data.cardIndices
                         :
                         [];
+
+                /*
+                    duplicate index-ები არ გვინდა
+                */
+
+                cardIndices =
+                    [
+                        ...new Set(
+                            cardIndices
+                        )
+                    ];
 
                 const selectedCards =
                     cardIndices
@@ -1447,7 +2025,7 @@ io.on(
 
                     socket.emit(
                         "errorMessage",
-                        "აირჩიე კარტი."
+                        "აირჩიე სწორი კარტი."
                     );
 
                     return;
@@ -1466,7 +2044,7 @@ io.on(
                     );
 
                 /*
-                    პირველი მოთამაშე.
+                    FIRST PLAYER
                 */
 
                 if (
@@ -1492,7 +2070,7 @@ io.on(
 
                         socket.emit(
                             "errorMessage",
-                            "პირველმა მოთამაშემ ერთი ფერის კარტები უნდა ჩამოვიდეს."
+                            "პირველი მოთამაშე მხოლოდ ერთი ფერის კარტებს უნდა ჩამოვიდეს."
                         );
 
                         return;
@@ -1503,32 +2081,35 @@ io.on(
 
                 } else {
 
+                    const required =
+                        Math.min(
+                            gs.leadCardCount,
+                            playerCards.length
+                        );
+
                     if (
-                        !isMaliutka
-                        &&
+                        !isMaliutka &&
                         selectedCards.length !==
-                        gs.leadCardCount
+                        required
                     ) {
 
                         socket.emit(
                             "errorMessage",
-                            `უნდა ჩამოხვიდე ${gs.leadCardCount} კარტი ან მალიუტკა.`
+                            "უნდა ჩამოხვიდე " +
+                            required +
+                            " კარტი ან მალიუტკა."
                         );
 
                         return;
                     }
                 }
 
-                /*
-                    Remove selected cards.
-                */
-
                 gs.playersCards[
                     socket.id
                 ] =
                     playerCards.filter(
                         (
-                            card,
+                            _,
                             index
                         ) =>
                             !cardIndices.includes(
@@ -1537,7 +2118,6 @@ io.on(
                     );
 
                 gs.table.push({
-
                     playerId:
                         socket.id,
 
@@ -1547,10 +2127,6 @@ io.on(
                     cards:
                         selectedCards
                 });
-
-                /*
-                    Next player
-                */
 
                 if (
                     gs.table.length <
@@ -1569,171 +2145,15 @@ io.on(
                         room
                     );
 
-                    return;
-                }
-
-                /*
-                    Round complete
-                */
-
-                const winningIndex =
-                    getWinningPlayIndex(
-                        gs.table,
-                        gs.trump
+                    scheduleBotTurn(
+                        room
                     );
 
-                const winningPlay =
-                    gs.table[
-                        winningIndex
-                    ];
-
-                if (
-                    !winningPlay
-                ) {
                     return;
                 }
 
-                const winnerId =
-                    winningPlay
-                        .playerId;
-
-                const tableCards =
-                    [];
-
-                gs.table.forEach(
-                    play =>
-                        tableCards.push(
-                            ...play.cards
-                        )
-                );
-
-                gs.takenCards[
-                    winnerId
-                ].push(
-                    ...tableCards
-                );
-
-                const winnerIndex =
-                    room.players
-                        .findIndex(
-                            player =>
-                                player.id ===
-                                winnerId
-                        );
-
-                gs.currentTurnIndex =
-                    winnerIndex;
-
-                gs.isProcessing =
-                    true;
-
-                broadcastGameState(
+                completeTrick(
                     room
-                );
-
-                setTimeout(
-                    () => {
-
-                        gs.table = [];
-
-                        gs.leadCardCount =
-                            null;
-
-                        /*
-                            ხელში ისევ მაქსიმუმ
-                            5 კარტი.
-                        */
-
-                        while (
-                            gs.deck.length >
-                            0
-                        ) {
-
-                            let needCards =
-                                false;
-
-                            for (
-                                let step = 0;
-
-                                step <
-                                room.players
-                                    .length;
-
-                                step++
-                            ) {
-
-                                const playerIndex =
-                                    (
-                                        winnerIndex +
-                                        step
-                                    )
-                                    %
-                                    room.players
-                                        .length;
-
-                                const player =
-                                    room.players[
-                                        playerIndex
-                                    ];
-
-                                const hand =
-                                    gs.playersCards[
-                                        player.id
-                                    ];
-
-                                if (
-                                    hand.length <
-                                    5
-                                    &&
-                                    gs.deck.length >
-                                    0
-                                ) {
-
-                                    hand.push(
-                                        gs.deck.pop()
-                                    );
-
-                                    needCards =
-                                        true;
-                                }
-                            }
-
-                            if (
-                                !needCards
-                            ) {
-                                break;
-                            }
-                        }
-
-                        const allHandsEmpty =
-                            room.players.every(
-                                player =>
-                                    gs.playersCards[
-                                        player.id
-                                    ].length ===
-                                    0
-                            );
-
-                        gs.isProcessing =
-                            false;
-
-                        if (
-                            allHandsEmpty
-                        ) {
-
-                            finishHand(
-                                room
-                            );
-
-                        } else {
-
-                            broadcastGameState(
-                                room
-                            );
-                        }
-
-                    },
-                    1200
                 );
             }
         );
@@ -1746,14 +2166,10 @@ io.on(
             "disconnect",
             () => {
 
-                const roomId =
-                    socket.roomId;
-
                 if (
-                    !roomId
-                    ||
+                    !socket.roomId ||
                     !rooms[
-                        roomId
+                        socket.roomId
                     ]
                 ) {
                     return;
@@ -1761,7 +2177,7 @@ io.on(
 
                 const room =
                     rooms[
-                        roomId
+                        socket.roomId
                     ];
 
                 room.players =
@@ -1777,19 +2193,16 @@ io.on(
                     "playerLeft"
                 );
 
-                /*
-                    თუ თამაში ჯერ არ იყო
-                    დაწყებული ოთახი დარჩეს,
-                    თუ ცარიელია წაიშალოს.
-                */
-
                 if (
-                    room.players.length ===
+                    room.players.filter(
+                        p =>
+                            !p.isBot
+                    ).length ===
                     0
                 ) {
 
                     delete rooms[
-                        roomId
+                        socket.roomId
                     ];
                 }
             }
@@ -1816,7 +2229,7 @@ app.get(
 <meta
     name="viewport"
     content="width=device-width, initial-scale=1.0"
-/>
+>
 
 <title>BURA VIP CLUB</title>
 
@@ -1824,67 +2237,100 @@ app.get(
 
 <style>
 
-/* =========================================================
-   ROOT
-========================================================= */
-
 * {
-    box-sizing: border-box;
+    box-sizing:
+        border-box;
 }
 
 :root {
-    --bg: #07090d;
-    --panel: #11151c;
-    --panel2: #181d26;
-    --gold: #f4c542;
-    --gold2: #ff9800;
-    --green: #0c6b3b;
-    --green2: #073b23;
-    --text: #ffffff;
-    --muted: #8993a4;
-    --red: #e04d4d;
-    --line: rgba(255,255,255,.08);
+
+    --bg:
+        #06080c;
+
+    --panel:
+        #10141b;
+
+    --panel2:
+        #181e27;
+
+    --gold:
+        #f6c94a;
+
+    --gold2:
+        #ff9800;
+
+    --green:
+        #11663b;
+
+    --muted:
+        #8a94a5;
+
+    --line:
+        rgba(255,255,255,.08);
 }
 
 html,
 body {
-    padding: 0;
-    margin: 0;
-    min-height: 100%;
-}
 
-body {
-    min-height: 100vh;
+    margin:
+        0;
 
-    background:
-        radial-gradient(
-            circle at 50% 0,
-            rgba(244,197,66,.10),
-            transparent 30%
-        ),
-        #07090d;
-
-    color: white;
+    min-height:
+        100%;
 
     font-family:
         Inter,
         Segoe UI,
         Arial,
         sans-serif;
+
+    background:
+        #06080c;
+
+    color:
+        white;
+}
+
+body {
+
+    min-height:
+        100vh;
+
+    background:
+
+        radial-gradient(
+            circle at 50% 0%,
+            rgba(244,197,66,.11),
+            transparent 27%
+        ),
+
+        radial-gradient(
+            circle at 5% 90%,
+            rgba(15,100,58,.12),
+            transparent 35%
+        ),
+
+        #06080c;
 }
 
 button,
 input,
 select {
-    font: inherit;
+
+    font:
+        inherit;
 }
 
 button {
-    cursor: pointer;
+
+    cursor:
+        pointer;
 }
 
 .hidden {
-    display: none !important;
+
+    display:
+        none !important;
 }
 
 /* =========================================================
@@ -1893,10 +2339,8 @@ button {
 
 .navbar {
 
-    height: 76px;
-
-    padding:
-        0 28px;
+    height:
+        74px;
 
     display:
         flex;
@@ -1907,15 +2351,8 @@ button {
     justify-content:
         space-between;
 
-    border-bottom:
-        1px solid
-        var(--line);
-
-    background:
-        rgba(7,9,13,.92);
-
-    backdrop-filter:
-        blur(18px);
+    padding:
+        0 28px;
 
     position:
         sticky;
@@ -1924,25 +2361,36 @@ button {
         0;
 
     z-index:
-        100;
+        50;
+
+    background:
+        rgba(6,8,12,.92);
+
+    backdrop-filter:
+        blur(18px);
+
+    border-bottom:
+        1px solid
+        var(--line);
 }
 
 .logo {
 
+    color:
+        var(--gold);
+
     font-size:
-        22px;
+        21px;
 
     font-weight:
         950;
 
     letter-spacing:
-        .7px;
-
-    color:
-        var(--gold);
+        .8px;
 }
 
 .logo span {
+
     color:
         white;
 }
@@ -1958,20 +2406,38 @@ button {
     gap:
         10px;
 
-    color:
-        #c4cad5;
+    text-align:
+        right;
+}
+
+.nav-name {
+
+    font-weight:
+        800;
 
     font-size:
-        13px;
+        12px;
+}
+
+.nav-balance {
+
+    color:
+        var(--muted);
+
+    font-size:
+        10px;
+
+    margin-top:
+        2px;
 }
 
 .avatar {
 
     width:
-        36px;
+        38px;
 
     height:
-        36px;
+        38px;
 
     border-radius:
         50%;
@@ -1982,22 +2448,22 @@ button {
     place-items:
         center;
 
+    color:
+        var(--gold);
+
+    font-weight:
+        950;
+
     background:
         linear-gradient(
             145deg,
-            #545c69,
-            #252a33
+            #3b4350,
+            #191e26
         );
 
     border:
         1px solid
-        rgba(244,197,66,.35);
-
-    font-weight:
-        900;
-
-    color:
-        var(--gold);
+        rgba(244,197,66,.32);
 }
 
 /* =========================================================
@@ -2010,16 +2476,16 @@ button {
         100vh;
 }
 
-.lobby-wrapper {
+.lobby-container {
 
     width:
-        min(1200px,100%);
+        min(1180px,100%);
 
     margin:
         auto;
 
     padding:
-        38px 20px 70px;
+        42px 20px 70px;
 }
 
 .hero {
@@ -2028,26 +2494,72 @@ button {
         center;
 
     margin-bottom:
-        28px;
+        32px;
+}
+
+.hero-tag {
+
+    display:
+        inline-flex;
+
+    align-items:
+        center;
+
+    gap:
+        7px;
+
+    color:
+        var(--gold);
+
+    font-size:
+        10px;
+
+    font-weight:
+        900;
+
+    letter-spacing:
+        1.4px;
+
+    border:
+        1px solid
+        rgba(244,197,66,.18);
+
+    background:
+        rgba(244,197,66,.05);
+
+    padding:
+        7px 12px;
+
+    border-radius:
+        30px;
+
+    margin-bottom:
+        13px;
 }
 
 .hero h1 {
 
-    font-size:
-        clamp(
-            28px,
-            5vw,
-            48px
-        );
-
     margin:
         0;
+
+    font-size:
+        clamp(
+            31px,
+            6vw,
+            52px
+        );
+
+    font-weight:
+        950;
+
+    letter-spacing:
+        -.6px;
 
     background:
         linear-gradient(
             135deg,
-            #fff1a5,
-            #f4c542,
+            #fff8c9,
+            #f6c94a,
             #ff9700
         );
 
@@ -2060,18 +2572,259 @@ button {
 
 .hero p {
 
-    color:
-        var(--muted);
+    margin:
+        10px auto 0;
 
-    margin-top:
-        10px;
+    max-width:
+        550px;
+
+    color:
+        #8f98a8;
+
+    font-size:
+        13px;
+
+    line-height:
+        1.6;
 }
 
 /* =========================================================
-   CARD PANELS
+   GRID
 ========================================================= */
 
-.grid {
+.main-grid {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        .9fr 1.1fr;
+
+    gap:
+        22px;
+}
+
+.panel {
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius:
+        20px;
+
+    background:
+
+        radial-gradient(
+            circle at 50% 0%,
+            rgba(255,255,255,.025),
+            transparent 38%
+        ),
+
+        linear-gradient(
+            145deg,
+            #141922,
+            #0b0e13
+        );
+
+    padding:
+        24px;
+
+    box-shadow:
+        0 30px 80px
+        rgba(0,0,0,.28);
+}
+
+.panel-title {
+
+    font-size:
+        17px;
+
+    font-weight:
+        900;
+
+    margin:
+        0;
+}
+
+.panel-sub {
+
+    color:
+        var(--muted);
+
+    font-size:
+        11px;
+
+    margin-top:
+        5px;
+
+    margin-bottom:
+        18px;
+}
+
+/* =========================================================
+   AUTH PREMIUM
+========================================================= */
+
+.auth-header {
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    gap:
+        12px;
+
+    margin-bottom:
+        17px;
+}
+
+.auth-crown {
+
+    width:
+        48px;
+
+    height:
+        48px;
+
+    border-radius:
+        14px;
+
+    display:
+        grid;
+
+    place-items:
+        center;
+
+    color:
+        #171005;
+
+    font-size:
+        24px;
+
+    background:
+        linear-gradient(
+            145deg,
+            #ffe76a,
+            #ff9c00
+        );
+
+    box-shadow:
+        0 10px 30px
+        rgba(255,156,0,.18);
+}
+
+.auth-header h2 {
+
+    margin:
+        0;
+
+    font-size:
+        18px;
+}
+
+.auth-header p {
+
+    margin:
+        3px 0 0;
+
+    color:
+        var(--muted);
+
+    font-size:
+        10px;
+}
+
+.bonus-banner {
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    gap:
+        11px;
+
+    padding:
+        12px;
+
+    border-radius:
+        12px;
+
+    margin-bottom:
+        17px;
+
+    border:
+        1px solid
+        rgba(244,197,66,.14);
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(244,197,66,.09),
+            rgba(244,197,66,.025)
+        );
+}
+
+.bonus-icon {
+
+    width:
+        37px;
+
+    height:
+        37px;
+
+    flex:
+        none;
+
+    border-radius:
+        50%;
+
+    display:
+        grid;
+
+    place-items:
+        center;
+
+    color:
+        var(--gold);
+
+    background:
+        rgba(244,197,66,.10);
+
+    border:
+        1px solid
+        rgba(244,197,66,.17);
+}
+
+.bonus-banner strong {
+
+    display:
+        block;
+
+    font-size:
+        11px;
+}
+
+.bonus-banner span {
+
+    display:
+        block;
+
+    margin-top:
+        2px;
+
+    color:
+        var(--muted);
+
+    font-size:
+        9px;
+}
+
+.auth-tabs {
 
     display:
         grid;
@@ -2079,63 +2832,72 @@ button {
     grid-template-columns:
         1fr 1fr;
 
-    gap:
-        20px;
-}
+    padding:
+        4px;
 
-.panel {
+    border-radius:
+        11px;
 
     background:
-        linear-gradient(
-            145deg,
-            rgba(22,27,36,.98),
-            rgba(12,15,21,.98)
-        );
+        #080b0f;
 
     border:
         1px solid
-        var(--line);
+        rgba(255,255,255,.05);
+
+    margin-bottom:
+        17px;
+}
+
+.auth-tab {
+
+    height:
+        39px;
+
+    border:
+        0;
 
     border-radius:
-        18px;
+        8px;
 
-    padding:
-        24px;
-
-    box-shadow:
-        0 25px 70px
-        rgba(0,0,0,.28);
-}
-
-.panel h2 {
-
-    font-size:
-        18px;
-
-    margin:
-        0 0 18px;
-}
-
-.panel-subtitle {
+    background:
+        transparent;
 
     color:
-        var(--muted);
+        #818b9b;
 
     font-size:
-        12px;
+        11px;
 
-    margin:
-        -10px 0 18px;
+    font-weight:
+        900;
+}
+
+.auth-tab.active {
+
+    color:
+        #151005;
+
+    background:
+        linear-gradient(
+            135deg,
+            #ffe35d,
+            #ff9a00
+        );
+
+    box-shadow:
+        0 7px 20px
+        rgba(255,154,0,.14);
 }
 
 /* =========================================================
-   INPUTS
+   INPUT
 ========================================================= */
 
 .field {
 
     margin:
-        14px 0;
+        13px 0;
 }
 
 .field label {
@@ -2143,23 +2905,23 @@ button {
     display:
         block;
 
-    font-size:
-        11px;
-
-    color:
-        #9ba4b3;
-
     margin-bottom:
         6px;
 
-    text-transform:
-        uppercase;
+    color:
+        #9ca5b3;
 
-    letter-spacing:
-        .4px;
+    font-size:
+        9px;
 
     font-weight:
-        800;
+        900;
+
+    letter-spacing:
+        .6px;
+
+    text-transform:
+        uppercase;
 }
 
 .field input,
@@ -2169,23 +2931,23 @@ button {
         100%;
 
     height:
-        46px;
+        45px;
 
-    background:
-        #090c11;
+    padding:
+        0 13px;
 
     color:
         white;
 
     border:
         1px solid
-        #2d3440;
+        #2b323e;
 
     border-radius:
         10px;
 
-    padding:
-        0 13px;
+    background:
+        #080b10;
 
     outline:
         none;
@@ -2198,15 +2960,53 @@ button {
 .field select:focus {
 
     border-color:
-        rgba(244,197,66,.75);
+        rgba(244,197,66,.65);
 
     box-shadow:
         0 0 0 3px
-        rgba(244,197,66,.08);
+        rgba(244,197,66,.07);
 }
 
 /* =========================================================
-   BUTTONS
+   TESTER
+========================================================= */
+
+.tester-hint {
+
+    margin:
+        10px 0 13px;
+
+    padding:
+        10px 11px;
+
+    border-radius:
+        10px;
+
+    border:
+        1px solid
+        rgba(165,98,216,.18);
+
+    background:
+        rgba(144,76,194,.06);
+
+    color:
+        #a991bb;
+
+    font-size:
+        9px;
+
+    line-height:
+        1.5;
+}
+
+.tester-hint b {
+
+    color:
+        #dfc5f2;
+}
+
+/* =========================================================
+   BUTTON
 ========================================================= */
 
 .gold-btn {
@@ -2215,7 +3015,7 @@ button {
         100%;
 
     height:
-        48px;
+        47px;
 
     border:
         0;
@@ -2223,25 +3023,28 @@ button {
     border-radius:
         11px;
 
-    background:
-        linear-gradient(
-            135deg,
-            #ffe15b,
-            #ff9700
-        );
-
     color:
-        #181006;
+        #171005;
 
     font-weight:
         950;
 
-    transition:
-        .15s;
+    font-size:
+        12px;
+
+    background:
+        linear-gradient(
+            135deg,
+            #ffe35d,
+            #ff9700
+        );
 
     box-shadow:
-        0 12px 30px
-        rgba(255,151,0,.16);
+        0 13px 30px
+        rgba(255,151,0,.15);
+
+    transition:
+        .16s;
 }
 
 .gold-btn:hover {
@@ -2250,45 +3053,104 @@ button {
         translateY(-2px);
 
     box-shadow:
-        0 15px 36px
-        rgba(255,151,0,.26);
+        0 17px 35px
+        rgba(255,151,0,.24);
 }
 
-.secondary-btn {
+.message {
 
-    width:
-        100%;
+    min-height:
+        21px;
 
-    height:
-        44px;
-
-    border-radius:
+    margin-top:
         10px;
 
-    border:
-        1px solid
-        var(--line);
-
-    background:
-        #1c222c;
+    text-align:
+        center;
 
     color:
-        white;
+        var(--gold);
+
+    font-size:
+        10px;
 
     font-weight:
         800;
 }
 
-.secondary-btn:hover {
-    background:
-        #262e3a;
+.message.error {
+
+    color:
+        #ff6666;
 }
 
 /* =========================================================
-   AUTH TABS
+   LOGGED
 ========================================================= */
 
-.auth-tabs {
+.logged-card {
+
+    display:
+        flex;
+
+    align-items:
+        center;
+
+    justify-content:
+        space-between;
+
+    gap:
+        10px;
+
+    padding:
+        12px;
+
+    margin-bottom:
+        15px;
+
+    border-radius:
+        11px;
+
+    background:
+        #080b10;
+
+    border:
+        1px solid
+        var(--line);
+
+    font-size:
+        10px;
+}
+
+.logged-card strong {
+
+    color:
+        var(--gold);
+}
+
+.logout-btn {
+
+    border:
+        0;
+
+    background:
+        transparent;
+
+    color:
+        #ff6767;
+
+    font-size:
+        9px;
+
+    font-weight:
+        900;
+}
+
+/* =========================================================
+   CAPACITY
+========================================================= */
+
+.capacity-grid {
 
     display:
         grid;
@@ -2296,110 +3158,188 @@ button {
     grid-template-columns:
         1fr 1fr;
 
-    background:
-        #090c11;
-
-    border-radius:
-        11px;
-
-    padding:
-        4px;
-
-    margin-bottom:
-        20px;
-}
-
-.auth-tab {
-
-    border:
-        0;
-
-    height:
-        40px;
-
-    border-radius:
-        8px;
-
-    background:
-        transparent;
-
-    color:
-        #8e97a6;
-
-    font-weight:
-        850;
-}
-
-.auth-tab.active {
-
-    color:
-        #111;
-
-    background:
-        linear-gradient(
-            135deg,
-            #ffe15b,
-            #ff9700
-        );
-}
-
-.message {
-
-    min-height:
-        22px;
-
-    text-align:
-        center;
+    gap:
+        9px;
 
     margin-top:
-        10px;
-
-    color:
-        var(--gold);
-
-    font-size:
-        12px;
-
-    font-weight:
-        800;
+        8px;
 }
 
-.message.error {
-    color:
-        #ff6666;
-}
+.capacity-card {
 
-.user-card {
-
-    padding:
-        14px;
-
-    margin-bottom:
-        18px;
-
-    border-radius:
-        12px;
-
-    background:
-        #0b0f15;
+    height:
+        65px;
 
     border:
         1px solid
         var(--line);
 
+    border-radius:
+        11px;
+
+    color:
+        #9ca5b3;
+
+    background:
+        #090c11;
+
+    font-size:
+        11px;
+
+    font-weight:
+        900;
+
+    transition:
+        .15s;
+}
+
+.capacity-card:hover {
+
+    border-color:
+        rgba(244,197,66,.35);
+}
+
+.capacity-card.active {
+
+    color:
+        var(--gold);
+
+    border-color:
+        rgba(244,197,66,.65);
+
+    background:
+        rgba(244,197,66,.06);
+}
+
+/* =========================================================
+   STAKE TABLES
+========================================================= */
+
+.stake-grid {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        repeat(2,1fr);
+
+    gap:
+        9px;
+
+    margin-top:
+        8px;
+}
+
+.stake-card {
+
+    min-height:
+        87px;
+
+    position:
+        relative;
+
+    overflow:
+        hidden;
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius:
+        13px;
+
+    color:
+        white;
+
+    background:
+        linear-gradient(
+            145deg,
+            #151a22,
+            #090c10
+        );
+
     display:
         flex;
 
-    justify-content:
-        space-between;
+    flex-direction:
+        column;
 
     align-items:
         center;
+
+    justify-content:
+        center;
+
+    gap:
+        2px;
+
+    transition:
+        .16s;
 }
 
-.user-card strong {
+.stake-card:hover {
+
+    transform:
+        translateY(-2px);
+
+    border-color:
+        rgba(244,197,66,.34);
+}
+
+.stake-card.active {
+
+    border-color:
+        var(--gold);
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(244,197,66,.14),
+            #090c10
+        );
+
+    box-shadow:
+        0 0 0 2px
+        rgba(244,197,66,.05);
+}
+
+.stake-symbol {
+
+    font-size:
+        16px;
+
+    color:
+        #d8dde4;
+}
+
+.stake-symbol.red {
+
+    color:
+        #cc4141;
+}
+
+.stake-card strong {
+
     color:
         var(--gold);
+
+    font-size:
+        20px;
+}
+
+.stake-card small {
+
+    color:
+        #727c8b;
+
+    font-size:
+        8px;
+
+    font-weight:
+        800;
+
+    letter-spacing:
+        .6px;
 }
 
 /* =========================================================
@@ -2415,37 +3355,26 @@ button {
         100vh;
 
     padding:
-        20px;
+        18px;
 
     background:
+
         radial-gradient(
             circle at 50% 45%,
-            rgba(25,130,70,.13),
-            transparent 45%
+            rgba(24,126,70,.14),
+            transparent 42%
         ),
-        #07090d;
+
+        #06080c;
 }
 
-.game-header {
+.game-top {
 
     width:
-        min(1200px,100%);
+        min(1150px,100%);
 
     margin:
         auto;
-
-    padding:
-        12px 15px;
-
-    border:
-        1px solid
-        var(--line);
-
-    border-radius:
-        13px;
-
-    background:
-        rgba(15,18,24,.95);
 
     display:
         flex;
@@ -2461,15 +3390,31 @@ button {
 
     flex-wrap:
         wrap;
+
+    padding:
+        11px 14px;
+
+    border-radius:
+        13px;
+
+    background:
+        #0d1117;
+
+    border:
+        1px solid
+        var(--line);
 }
 
-.game-logo {
+.game-brand {
 
     color:
         var(--gold);
 
     font-weight:
         950;
+
+    font-size:
+        13px;
 }
 
 .game-info {
@@ -2477,36 +3422,37 @@ button {
     display:
         flex;
 
-    gap:
-        8px;
-
     flex-wrap:
         wrap;
+
+    gap:
+        6px;
 }
 
 .badge {
 
     padding:
-        7px 10px;
+        6px 9px;
 
     border-radius:
         8px;
-
-    background:
-        #090c11;
 
     border:
         1px solid
         var(--line);
 
+    background:
+        #070a0e;
+
     color:
-        #aeb6c3;
+        #838d9c;
 
     font-size:
-        11px;
+        9px;
 }
 
 .badge b {
+
     color:
         white;
 }
@@ -2514,7 +3460,10 @@ button {
 #status {
 
     min-height:
-        28px;
+        27px;
+
+    margin:
+        9px;
 
     text-align:
         center;
@@ -2522,11 +3471,11 @@ button {
     color:
         var(--gold);
 
+    font-size:
+        12px;
+
     font-weight:
         900;
-
-    margin:
-        10px;
 }
 
 /* =========================================================
@@ -2536,37 +3485,42 @@ button {
 .table-board {
 
     width:
-        min(1100px,96vw);
+        min(1080px,96vw);
 
     height:
         560px;
 
+    margin:
+        auto;
+
     position:
         relative;
 
-    margin:
-        0 auto;
+    overflow:
+        hidden;
 
     border-radius:
         50% / 38%;
 
     border:
         17px solid
-        #2d1c10;
+        #2c1c10;
 
     background:
         radial-gradient(
             ellipse at center,
-            #16834b 0%,
-            #0a6237 55%,
-            #06341e 100%
+            #16844b,
+            #0a6037 58%,
+            #06331e
         );
 
     box-shadow:
-        0 25px 90px
-        rgba(0,0,0,.75),
-        inset 0 0 70px
-        rgba(0,0,0,.40);
+
+        0 28px 85px
+        rgba(0,0,0,.72),
+
+        inset 0 0 80px
+        rgba(0,0,0,.35);
 }
 
 .table-board:before {
@@ -2578,7 +3532,7 @@ button {
         absolute;
 
     inset:
-        14px;
+        13px;
 
     border:
         1px solid
@@ -2606,20 +3560,20 @@ button {
         translate(-50%,-50%);
 
     color:
-        rgba(255,255,255,.07);
+        rgba(255,255,255,.055);
 
     font-size:
-        32px;
+        30px;
 
     font-weight:
         950;
 
     letter-spacing:
-        4px;
+        5px;
 }
 
 /* =========================================================
-   SEATS
+   SEAT
 ========================================================= */
 
 #players {
@@ -2636,11 +3590,11 @@ button {
     position:
         absolute;
 
+    width:
+        140px;
+
     transform:
         translate(-50%,-50%);
-
-    width:
-        145px;
 
     text-align:
         center;
@@ -2649,47 +3603,50 @@ button {
         5;
 }
 
-.seat-card {
+.seat-box {
+
+    padding:
+        7px;
+
+    border-radius:
+        11px;
 
     background:
-        rgba(5,9,11,.88);
+        rgba(5,8,11,.88);
 
     border:
         1px solid
-        rgba(255,255,255,.13);
-
-    border-radius:
-        12px;
-
-    padding:
-        8px;
+        rgba(255,255,255,.11);
 
     box-shadow:
         0 8px 25px
-        rgba(0,0,0,.4);
+        rgba(0,0,0,.38);
 }
 
 .seat.current
-.seat-card {
+.seat-box {
 
     border-color:
         var(--gold);
 
     box-shadow:
-        0 0 25px
-        rgba(244,197,66,.35);
+        0 0 22px
+        rgba(244,197,66,.30);
 }
 
 .seat-avatar {
 
     width:
-        30px;
+        29px;
 
     height:
-        30px;
+        29px;
 
     margin:
         auto;
+
+    border-radius:
+        50%;
 
     display:
         grid;
@@ -2697,17 +3654,14 @@ button {
     place-items:
         center;
 
-    border-radius:
-        50%;
-
     background:
-        #303845;
+        #2f3843;
 
     color:
         var(--gold);
 
     font-size:
-        11px;
+        10px;
 
     font-weight:
         900;
@@ -2716,25 +3670,25 @@ button {
 .seat-name {
 
     margin-top:
-        4px;
+        3px;
 
     font-size:
-        12px;
+        10px;
 
     font-weight:
         900;
 }
 
-.seat-count {
-
-    color:
-        #8993a4;
-
-    font-size:
-        10px;
+.seat-info {
 
     margin-top:
-        3px;
+        2px;
+
+    color:
+        #7f8998;
+
+    font-size:
+        8px;
 }
 
 .card-backs {
@@ -2746,42 +3700,43 @@ button {
         center;
 
     margin-top:
-        5px;
+        4px;
 }
 
 .card-back {
 
     width:
-        20px;
+        18px;
 
     height:
-        29px;
+        26px;
 
     border:
         1px solid
-        #d3af48;
+        #d0ad48;
 
     border-radius:
-        4px;
+        3px;
 
     margin-left:
-        -7px;
+        -6px;
 
     background:
         repeating-linear-gradient(
             45deg,
-            #26313b 0 3px,
-            #121921 3px 6px
+            #27313a 0 3px,
+            #121920 3px 6px
         );
 }
 
 .card-back:first-child {
+
     margin-left:
         0;
 }
 
 /* =========================================================
-   TABLE CARDS
+   CENTER CARDS
 ========================================================= */
 
 #table-cards {
@@ -2801,17 +3756,17 @@ button {
     display:
         flex;
 
-    gap:
-        15px;
-
     align-items:
         center;
 
     justify-content:
         center;
 
+    gap:
+        13px;
+
     max-width:
-        55%;
+        57%;
 
     z-index:
         4;
@@ -2819,17 +3774,26 @@ button {
 
 .play-group {
 
-    text-align:
+    display:
+        flex;
+
+    flex-direction:
+        column;
+
+    align-items:
         center;
 }
 
 .play-name {
 
-    font-size:
-        10px;
-
     margin-bottom:
-        5px;
+        4px;
+
+    color:
+        #d6dce5;
+
+    font-size:
+        8px;
 
     font-weight:
         800;
@@ -2843,41 +3807,37 @@ button {
         var(--gold);
 
     box-shadow:
-        0 0 20px
-        var(--gold);
+        0 0 17px
+        rgba(244,197,66,.8);
 }
 
 /* =========================================================
-   CARDS
+   CARD
 ========================================================= */
 
 .card {
 
     width:
-        62px;
+        59px;
 
     height:
-        90px;
+        86px;
+
+    padding:
+        5px;
 
     border-radius:
-        8px;
-
-    background:
-        #fafaf7;
-
-    color:
-        #151515;
+        7px;
 
     border:
         1px solid
-        #d5d5d5;
+        #d9d9d4;
 
-    box-shadow:
-        0 6px 17px
-        rgba(0,0,0,.55);
+    background:
+        #fafaf6;
 
-    padding:
-        6px;
+    color:
+        #131313;
 
     display:
         flex;
@@ -2888,40 +3848,43 @@ button {
     justify-content:
         space-between;
 
-    user-select:
-        none;
-
     font-weight:
         950;
+
+    box-shadow:
+        0 6px 14px
+        rgba(0,0,0,.50);
+
+    user-select:
+        none;
 }
 
 .card.red {
+
     color:
-        #ad1515;
+        #ad1616;
 }
 
-.card-rank {
+.card-top,
+.card-bottom {
 
     font-size:
-        14px;
+        11px;
 }
 
-.card-suit {
+.card-center {
 
     text-align:
         center;
 
     font-size:
-        29px;
+        25px;
 }
 
 .card-bottom {
 
     text-align:
         right;
-
-    font-size:
-        14px;
 
     transform:
         rotate(180deg);
@@ -2931,13 +3894,13 @@ button {
    HAND
 ========================================================= */
 
-.hand-wrap {
+.hand-panel {
 
     width:
         min(1000px,100%);
 
     margin:
-        18px auto 0;
+        16px auto 0;
 
     text-align:
         center;
@@ -2945,20 +3908,20 @@ button {
 
 .hand-title {
 
+    margin-bottom:
+        7px;
+
     color:
-        #9aa3b1;
+        #87919f;
 
     font-size:
-        12px;
-
-    margin-bottom:
-        8px;
+        10px;
 }
 
 #my-cards {
 
     min-height:
-        105px;
+        102px;
 
     display:
         flex;
@@ -2973,55 +3936,54 @@ button {
         wrap;
 
     gap:
-        8px;
+        7px;
 }
 
-#my-cards .card {
+#my-cards
+.card {
 
     cursor:
         pointer;
 
     transition:
-        transform .14s,
-        border .14s,
-        box-shadow .14s;
+        .13s;
 }
 
 #my-cards
 .card:hover {
 
     transform:
-        translateY(-7px);
+        translateY(-6px);
 }
 
 #my-cards
 .card.selected {
 
     transform:
-        translateY(-14px);
+        translateY(-13px);
 
     border:
         3px solid
         var(--gold);
 
     box-shadow:
-        0 0 22px
-        rgba(244,197,66,.65);
+        0 0 19px
+        rgba(244,197,66,.55);
 }
 
 .play-btn {
-
-    margin-top:
-        12px;
 
     min-width:
         170px;
 
     height:
-        43px;
+        41px;
+
+    margin-top:
+        10px;
 
     padding:
-        0 28px;
+        0 27px;
 
     border:
         0;
@@ -3029,41 +3991,137 @@ button {
     border-radius:
         10px;
 
-    background:
-        linear-gradient(
-            135deg,
-            #ffe15b,
-            #ff9700
-        );
+    color:
+        #151005;
 
     font-weight:
         950;
 
-    color:
-        #15100a;
+    background:
+        linear-gradient(
+            135deg,
+            #ffe35d,
+            #ff9700
+        );
 }
 
 .play-btn:disabled {
 
-    background:
-        #2e3540;
-
     color:
         #68717e;
+
+    background:
+        #2b323c;
 
     cursor:
         not-allowed;
 }
 
 /* =========================================================
-   RESPONSIVE
+   SCOREBOARD
 ========================================================= */
 
-@media (
-    max-width: 800px
-) {
+.score-board {
 
-    .grid {
+    width:
+        min(800px,100%);
+
+    margin:
+        15px auto 0;
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius:
+        12px;
+
+    overflow:
+        hidden;
+
+    background:
+        #0b0e13;
+}
+
+.score-title {
+
+    padding:
+        9px;
+
+    color:
+        var(--gold);
+
+    text-align:
+        center;
+
+    font-size:
+        9px;
+
+    font-weight:
+        900;
+
+    border-bottom:
+        1px solid
+        var(--line);
+}
+
+.score-grid {
+
+    display:
+        grid;
+
+    gap:
+        0;
+}
+
+.score-row {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        1.2fr .8fr .8fr .8fr;
+
+    border-bottom:
+        1px solid
+        rgba(255,255,255,.05);
+
+    font-size:
+        8px;
+}
+
+.score-row:last-child {
+
+    border-bottom:
+        0;
+}
+
+.score-row div {
+
+    padding:
+        7px;
+
+    text-align:
+        center;
+}
+
+.score-row.header {
+
+    color:
+        #727c8b;
+
+    font-weight:
+        900;
+}
+
+/* =========================================================
+   MOBILE
+========================================================= */
+
+@media(max-width:800px) {
+
+    .main-grid {
+
         grid-template-columns:
             1fr;
     }
@@ -3071,13 +4129,14 @@ button {
     .table-board {
 
         height:
-            480px;
+            490px;
 
         border-width:
-            11px;
+            12px;
     }
 
     .seat {
+
         width:
             110px;
     }
@@ -3085,50 +4144,49 @@ button {
     .card {
 
         width:
-            52px;
+            50px;
 
         height:
-            76px;
+            74px;
     }
 
-    .card-suit {
+    .card-center {
+
         font-size:
-            23px;
-    }
-
-    #table-cards {
-        max-width:
-            70%;
+            20px;
     }
 }
 
-@media (
-    max-width: 520px
-) {
+@media(max-width:520px) {
 
     .navbar {
+
         padding:
             0 13px;
     }
 
     .logo {
+
         font-size:
-            17px;
+            16px;
     }
 
-    .lobby-wrapper {
+    .lobby-container {
+
         padding:
-            25px 12px;
+            25px 11px 50px;
     }
 
     .panel {
+
         padding:
             17px;
     }
 
     #game {
+
         padding:
-            8px;
+            7px;
     }
 
     .table-board {
@@ -3137,55 +4195,68 @@ button {
             420px;
 
         border-radius:
-            47% / 30%;
+            47% / 31%;
+
+        border-width:
+            9px;
     }
 
     .seat {
 
         width:
-            92px;
-    }
-
-    .seat-card {
-        padding:
-            5px;
-    }
-
-    .seat-avatar {
-
-        width:
-            25px;
-
-        height:
-            25px;
+            88px;
     }
 
     .seat-name {
+
         font-size:
-            10px;
+            8px;
+    }
+
+    .seat-info {
+
+        font-size:
+            7px;
     }
 
     .card {
 
         width:
-            46px;
+            45px;
 
         height:
-            68px;
+            66px;
 
         padding:
             4px;
     }
 
-    .card-suit {
+    .card-center {
+
         font-size:
-            19px;
+            18px;
     }
 
-    .card-rank,
+    .card-top,
     .card-bottom {
+
         font-size:
-            11px;
+            9px;
+    }
+
+    #table-cards {
+
+        max-width:
+            70%;
+
+        gap:
+            6px;
+    }
+
+    .stake-card {
+
+        min-height:
+            77px;
     }
 }
 
@@ -3213,18 +4284,21 @@ button {
         <div class="nav-user">
 
             <div>
-                <div id="nav-username">
+
+                <div
+                    class="nav-name"
+                    id="nav-username"
+                >
                     სტუმარი
                 </div>
 
-                <small
+                <div
+                    class="nav-balance"
                     id="nav-balance"
-                    style="
-                    color:#7f8998
-                    "
                 >
                     გაიარე რეგისტრაცია
-                </small>
+                </div>
+
             </div>
 
             <div
@@ -3239,30 +4313,71 @@ button {
     </div>
 
     <div
-        class="lobby-wrapper"
+        class="lobby-container"
     >
 
         <div class="hero">
+
+            <div class="hero-tag">
+                ♠ ONLINE CARD ROOM
+            </div>
 
             <h1>
                 BURA VIP CLUB
             </h1>
 
             <p>
-                კლასიკური ბურა თანამედროვე ონლაინ მაგიდაზე
+                შექმენი ანგარიში, აირჩიე 3 ან 4 კაციანი მაგიდა,
+                ფსონი და ითამაშე ბურა ონლაინ.
             </p>
 
         </div>
 
-        <div class="grid">
+        <div class="main-grid">
 
             <!-- AUTH -->
 
             <div class="panel">
 
-                <h2>
-                    ანგარიში
-                </h2>
+                <div class="auth-header">
+
+                    <div class="auth-crown">
+                        ♛
+                    </div>
+
+                    <div>
+
+                        <h2>
+                            Player Account
+                        </h2>
+
+                        <p>
+                            შენი ადგილი BURA VIP CLUB-ში
+                        </p>
+
+                    </div>
+
+                </div>
+
+                <div class="bonus-banner">
+
+                    <div class="bonus-icon">
+                        ♠
+                    </div>
+
+                    <div>
+
+                        <strong>
+                            Welcome Bonus
+                        </strong>
+
+                        <span>
+                            ყველა მოთამაშეს აქვს $1,000 სატესტო ბალანსი
+                        </span>
+
+                    </div>
+
+                </div>
 
                 <div class="auth-tabs">
 
@@ -3286,9 +4401,7 @@ button {
 
                 <!-- LOGIN -->
 
-                <div
-                    id="login-box"
-                >
+                <div id="login-box">
 
                     <div class="field">
 
@@ -3299,7 +4412,7 @@ button {
                         <input
                             id="login-username"
                             placeholder="შენი username"
-                        />
+                        >
 
                     </div>
 
@@ -3313,8 +4426,16 @@ button {
                             id="login-password"
                             type="password"
                             placeholder="პაროლი"
-                        />
+                        >
 
+                    </div>
+
+                    <div class="tester-hint">
+                        🧪 TEST MODE:
+                        ჩაწერე
+                        <b>saba123</b>
+                        — პაროლი და რეგისტრაცია არ გჭირდება.
+                        ცარიელი ადგილები ავტომატურად შეივსება ბოტებით.
                     </div>
 
                     <button
@@ -3342,8 +4463,8 @@ button {
                         <input
                             id="reg-username"
                             maxlength="20"
-                            placeholder="მაგ: saba123"
-                        />
+                            placeholder="მაგ: giorgi99"
+                        >
 
                     </div>
 
@@ -3357,7 +4478,7 @@ button {
                             id="reg-email"
                             type="email"
                             placeholder="you@email.com"
-                        />
+                        >
 
                     </div>
 
@@ -3371,7 +4492,7 @@ button {
                             id="reg-password"
                             type="password"
                             placeholder="მინიმუმ 6 სიმბოლო"
-                        />
+                        >
 
                     </div>
 
@@ -3379,7 +4500,7 @@ button {
                         class="gold-btn"
                         onclick="registerUser()"
                     >
-                        რეგისტრაცია
+                        ანგარიშის შექმნა
                     </button>
 
                 </div>
@@ -3395,19 +4516,17 @@ button {
 
             <div class="panel">
 
-                <h2>
-                    მაგიდაზე შესვლა
+                <h2 class="panel-title">
+                    აირჩიე მაგიდა
                 </h2>
 
-                <div
-                    class="panel-subtitle"
-                >
-                    თამაშამდე საჭიროა ანგარიში.
+                <div class="panel-sub">
+                    აირჩიე მოთამაშეების რაოდენობა და სასურველი ფსონი.
                 </div>
 
                 <div
                     id="logged-user-card"
-                    class="user-card hidden"
+                    class="logged-card hidden"
                 >
 
                     <div>
@@ -3418,18 +4537,15 @@ button {
                     </div>
 
                     <button
+                        class="logout-btn"
                         onclick="logout()"
-                        style="
-                            background:none;
-                            border:0;
-                            color:#ff6868;
-                            font-weight:800;
-                        "
                     >
                         გასვლა
                     </button>
 
                 </div>
+
+                <!-- CAPACITY -->
 
                 <div class="field">
 
@@ -3437,43 +4553,41 @@ button {
                         მოთამაშეების რაოდენობა
                     </label>
 
-                    <select
+                    <input
+                        type="hidden"
                         id="capacity"
+                        value="3"
                     >
 
-                        <option value="2">
-                            2 მოთამაშე
-                        </option>
+                    <div class="capacity-grid">
 
-                        <option value="3">
-                            3 მოთამაშე
-                        </option>
+                        <button
+                            class="capacity-card active"
+                            onclick="selectCapacity(3,this)"
+                        >
+                            👥 3 მოთამაშე
+                        </button>
 
-                        <option value="4">
-                            4 მოთამაშე
-                        </option>
+                        <button
+                            class="capacity-card"
+                            onclick="selectCapacity(4,this)"
+                        >
+                            👥 4 მოთამაშე
+                        </button>
 
-                        <option value="5">
-                            5 მოთამაშე
-                        </option>
-
-                        <option value="6">
-                            6 მოთამაშე
-                        </option>
-
-                    </select>
+                    </div>
 
                 </div>
+
+                <!-- PARTIES -->
 
                 <div class="field">
 
                     <label>
-                        პარტიები
+                        პარტიების რაოდენობა
                     </label>
 
-                    <select
-                        id="parties"
-                    >
+                    <select id="parties">
 
                         <option value="1">
                             1 პარტია
@@ -3491,33 +4605,121 @@ button {
 
                 </div>
 
+                <!-- STAKES -->
+
                 <div class="field">
 
                     <label>
                         ფსონი
                     </label>
 
-                    <select
+                    <input
+                        type="hidden"
                         id="stake"
+                        value="5"
                     >
 
-                        <option value="1">
-                            1
-                        </option>
+                    <div class="stake-grid">
 
-                        <option value="5">
-                            5
-                        </option>
+                        <button
+                            class="stake-card active"
+                            onclick="selectStake(5,this)"
+                        >
 
-                        <option value="10">
-                            10
-                        </option>
+                            <span class="stake-symbol">
+                                ♠
+                            </span>
 
-                        <option value="20">
-                            20
-                        </option>
+                            <strong>
+                                $5
+                            </strong>
 
-                    </select>
+                            <small>
+                                LOW TABLE
+                            </small>
+
+                        </button>
+
+                        <button
+                            class="stake-card"
+                            onclick="selectStake(10,this)"
+                        >
+
+                            <span class="stake-symbol">
+                                ♣
+                            </span>
+
+                            <strong>
+                                $10
+                            </strong>
+
+                            <small>
+                                STANDARD
+                            </small>
+
+                        </button>
+
+                        <button
+                            class="stake-card"
+                            onclick="selectStake(25,this)"
+                        >
+
+                            <span class="stake-symbol red">
+                                ♥
+                            </span>
+
+                            <strong>
+                                $25
+                            </strong>
+
+                            <small>
+                                HIGH TABLE
+                            </small>
+
+                        </button>
+
+                        <button
+                            class="stake-card"
+                            onclick="selectStake(50,this)"
+                        >
+
+                            <span class="stake-symbol red">
+                                ♦
+                            </span>
+
+                            <strong>
+                                $50
+                            </strong>
+
+                            <small>
+                                VIP TABLE
+                            </small>
+
+                        </button>
+
+                        <button
+                            class="stake-card"
+                            onclick="selectStake(100,this)"
+                            style="
+                                grid-column:1 / -1;
+                            "
+                        >
+
+                            <span class="stake-symbol">
+                                ♛
+                            </span>
+
+                            <strong>
+                                $100
+                            </strong>
+
+                            <small>
+                                ELITE TABLE
+                            </small>
+
+                        </button>
+
+                    </div>
 
                 </div>
 
@@ -3525,7 +4727,7 @@ button {
                     class="gold-btn"
                     onclick="joinTable()"
                 >
-                    თამაშის დაწყება
+                    მაგიდაზე დაჯდომა
                 </button>
 
                 <div
@@ -3547,52 +4749,45 @@ button {
 
 <div id="game">
 
-    <div
-        class="game-header"
-    >
+    <div class="game-top">
 
-        <div
-            class="game-logo"
-        >
+        <div class="game-brand">
             BURA VIP CLUB
         </div>
 
-        <div
-            class="game-info"
-        >
+        <div class="game-info">
 
-            <div
-                class="badge"
-            >
+            <div class="badge">
                 კოზირი:
                 <b id="trump">
                     -
                 </b>
             </div>
 
-            <div
-                class="badge"
-            >
+            <div class="badge">
                 პარტია:
                 <b id="party-num">
                     -
                 </b>
             </div>
 
-            <div
-                class="badge"
-            >
+            <div class="badge">
                 ხელი:
                 <b id="hand-index">
                     -
                 </b>
             </div>
 
-            <div
-                class="badge"
-            >
+            <div class="badge">
                 დასტა:
                 <b id="deck-count">
+                    -
+                </b>
+            </div>
+
+            <div class="badge">
+                ფსონი:
+                <b id="game-stake">
                     -
                 </b>
             </div>
@@ -3601,43 +4796,27 @@ button {
 
     </div>
 
-    <div
-        id="status"
-    ></div>
+    <div id="status"></div>
 
-    <div
-        class="table-board"
-    >
+    <div class="table-board">
 
-        <div
-            class="table-logo"
-        >
+        <div class="table-logo">
             BURA
         </div>
 
-        <div
-            id="players"
-        ></div>
+        <div id="players"></div>
 
-        <div
-            id="table-cards"
-        ></div>
+        <div id="table-cards"></div>
 
     </div>
 
-    <div
-        class="hand-wrap"
-    >
+    <div class="hand-panel">
 
-        <div
-            class="hand-title"
-        >
+        <div class="hand-title">
             შენი კარტები
         </div>
 
-        <div
-            id="my-cards"
-        ></div>
+        <div id="my-cards"></div>
 
         <button
             id="play-button"
@@ -3650,12 +4829,22 @@ button {
 
     </div>
 
+    <div class="score-board">
+
+        <div class="score-title">
+            LIVE SCORE
+        </div>
+
+        <div id="score-content"></div>
+
+    </div>
+
 </div>
 
 <script>
 
 /* =========================================================
-   CLIENT
+   CLIENT STATE
 ========================================================= */
 
 const socket =
@@ -3676,20 +4865,21 @@ let balance =
         "bura_balance"
     );
 
+let isTester =
+    localStorage.getItem(
+        "bura_tester"
+    ) === "true";
+
 let currentState =
     null;
 
 let selectedCards =
     [];
 
-/* =========================================================
-   INITIAL USER UI
-========================================================= */
-
 updateUserUI();
 
 /* =========================================================
-   AUTH UI
+   AUTH TABS
 ========================================================= */
 
 function showLogin() {
@@ -3776,7 +4966,7 @@ function showRegister() {
 
 async function registerUser() {
 
-    const usernameInput =
+    const regUsername =
         document
             .getElementById(
                 "reg-username"
@@ -3800,7 +4990,7 @@ async function registerUser() {
             .value;
 
     setAuthMessage(
-        "რეგისტრაცია...",
+        "ანგარიში იქმნება...",
         false
     );
 
@@ -3820,17 +5010,14 @@ async function registerUser() {
                     },
 
                     body:
-                        JSON.stringify(
-                            {
+                        JSON.stringify({
+                            username:
+                                regUsername,
 
-                                username:
-                                    usernameInput,
+                            email,
 
-                                email,
-
-                                password
-                            }
-                        )
+                            password
+                        })
                 }
             );
 
@@ -3838,8 +5025,7 @@ async function registerUser() {
             await response.json();
 
         if (
-            !response.ok
-            ||
+            !response.ok ||
             !data.ok
         ) {
 
@@ -3857,7 +5043,7 @@ async function registerUser() {
         );
 
         setAuthMessage(
-            "რეგისტრაცია წარმატებით დასრულდა.",
+            "✓ ანგარიში წარმატებით შეიქმნა. ბალანსი: $1,000",
             false
         );
 
@@ -3880,7 +5066,7 @@ async function registerUser() {
 
 async function loginUser() {
 
-    const usernameInput =
+    const loginUsername =
         document
             .getElementById(
                 "login-username"
@@ -3888,17 +5074,34 @@ async function loginUser() {
             .value
             .trim();
 
-    const password =
+    let password =
         document
             .getElementById(
                 "login-password"
             )
             .value;
 
-    setAuthMessage(
-        "შესვლა...",
-        false
-    );
+    if (
+        loginUsername
+            .toLowerCase() ===
+        "saba123"
+    ) {
+
+        password =
+            "";
+
+        setAuthMessage(
+            "🧪 TEST MODE იტვირთება...",
+            false
+        );
+
+    } else {
+
+        setAuthMessage(
+            "შესვლა...",
+            false
+        );
+    }
 
     try {
 
@@ -3916,15 +5119,12 @@ async function loginUser() {
                     },
 
                     body:
-                        JSON.stringify(
-                            {
+                        JSON.stringify({
+                            username:
+                                loginUsername,
 
-                                username:
-                                    usernameInput,
-
-                                password
-                            }
-                        )
+                            password
+                        })
                 }
             );
 
@@ -3932,8 +5132,7 @@ async function loginUser() {
             await response.json();
 
         if (
-            !response.ok
-            ||
+            !response.ok ||
             !data.ok
         ) {
 
@@ -3950,10 +5149,22 @@ async function loginUser() {
             data
         );
 
-        setAuthMessage(
-            "წარმატებით შეხვედით.",
-            false
-        );
+        if (
+            data.isTester
+        ) {
+
+            setAuthMessage(
+                "🧪 TEST MODE აქტიურია — ბოტები ავტომატურად შეავსებენ მაგიდას.",
+                false
+            );
+
+        } else {
+
+            setAuthMessage(
+                "✓ წარმატებით შეხვედით.",
+                false
+            );
+        }
 
     } catch (err) {
 
@@ -3968,6 +5179,10 @@ async function loginUser() {
     }
 }
 
+/* =========================================================
+   LOGIN STORAGE
+========================================================= */
+
 function saveLogin(
     data
 ) {
@@ -3980,6 +5195,9 @@ function saveLogin(
 
     balance =
         data.balance;
+
+    isTester =
+        !!data.isTester;
 
     localStorage.setItem(
         "bura_token",
@@ -3996,6 +5214,13 @@ function saveLogin(
         balance
     );
 
+    localStorage.setItem(
+        "bura_tester",
+        String(
+            isTester
+        )
+    );
+
     updateUserUI();
 }
 
@@ -4010,6 +5235,9 @@ function logout() {
     balance =
         null;
 
+    isTester =
+        false;
+
     localStorage.removeItem(
         "bura_token"
     );
@@ -4022,6 +5250,10 @@ function logout() {
         "bura_balance"
     );
 
+    localStorage.removeItem(
+        "bura_tester"
+    );
+
     updateUserUI();
 
     setAuthMessage(
@@ -4032,19 +5264,20 @@ function logout() {
 
 function setAuthMessage(
     text,
-    isError
+    error
 ) {
 
     const el =
-        document.getElementById(
-            "auth-message"
-        );
+        document
+            .getElementById(
+                "auth-message"
+            );
 
     el.textContent =
         text;
 
     el.className =
-        isError
+        error
             ?
             "message error"
             :
@@ -4057,44 +5290,60 @@ function setAuthMessage(
 
 function updateUserUI() {
 
-    const navName =
-        document.getElementById(
-            "nav-username"
-        );
+    const navUsername =
+        document
+            .getElementById(
+                "nav-username"
+            );
 
     const navBalance =
-        document.getElementById(
-            "nav-balance"
-        );
+        document
+            .getElementById(
+                "nav-balance"
+            );
 
     const avatar =
-        document.getElementById(
-            "nav-avatar"
-        );
+        document
+            .getElementById(
+                "nav-avatar"
+            );
 
     const loggedCard =
-        document.getElementById(
-            "logged-user-card"
-        );
+        document
+            .getElementById(
+                "logged-user-card"
+            );
 
     const loggedName =
-        document.getElementById(
-            "logged-name"
-        );
+        document
+            .getElementById(
+                "logged-name"
+            );
 
     if (
         token &&
         username
     ) {
 
-        navName.textContent =
-            username;
+        navUsername.textContent =
+            username +
+            (
+                isTester
+                    ?
+                    " 🧪"
+                    :
+                    ""
+            );
 
         navBalance.textContent =
-            "ბალანსი: " +
-            (
-                balance ?? 0
-            );
+            isTester
+                ?
+                "TEST MODE · $1,000"
+                :
+                "ბალანსი: $" +
+                (
+                    balance ?? 1000
+                );
 
         avatar.textContent =
             username
@@ -4112,7 +5361,7 @@ function updateUserUI() {
 
     } else {
 
-        navName.textContent =
+        navUsername.textContent =
             "სტუმარი";
 
         navBalance.textContent =
@@ -4130,14 +5379,80 @@ function updateUserUI() {
 }
 
 /* =========================================================
-   JOIN TABLE
+   TABLE SELECT
+========================================================= */
+
+function selectCapacity(
+    value,
+    button
+) {
+
+    document
+        .getElementById(
+            "capacity"
+        )
+        .value =
+            value;
+
+    document
+        .querySelectorAll(
+            ".capacity-card"
+        )
+        .forEach(
+            element =>
+                element
+                    .classList
+                    .remove(
+                        "active"
+                    )
+        );
+
+    button
+        .classList
+        .add(
+            "active"
+        );
+}
+
+function selectStake(
+    value,
+    button
+) {
+
+    document
+        .getElementById(
+            "stake"
+        )
+        .value =
+            value;
+
+    document
+        .querySelectorAll(
+            ".stake-card"
+        )
+        .forEach(
+            element =>
+                element
+                    .classList
+                    .remove(
+                        "active"
+                    )
+        );
+
+    button
+        .classList
+        .add(
+            "active"
+        );
+}
+
+/* =========================================================
+   JOIN
 ========================================================= */
 
 function joinTable() {
 
-    if (
-        !token
-    ) {
+    if (!token) {
 
         setAuthMessage(
             "ჯერ გაიარე რეგისტრაცია ან შედი ანგარიშზე.",
@@ -4145,8 +5460,10 @@ function joinTable() {
         );
 
         window.scrollTo({
-            top: 0,
-            behavior: "smooth"
+            top:
+                0,
+            behavior:
+                "smooth"
         });
 
         return;
@@ -4178,18 +5495,18 @@ function joinTable() {
             "waiting-message"
         )
         .textContent =
-            "მაგიდას ვეძებთ...";
+            isTester
+                ?
+                "🧪 TEST TABLE მზადდება..."
+                :
+                "ვეძებთ შესაბამის მაგიდას...";
 
     socket.emit(
         "joinTable",
         {
-
             token,
-
             capacity,
-
             parties,
-
             stake
         }
     );
@@ -4211,7 +5528,9 @@ socket.on(
                 "ველოდებით მოთამაშეებს: " +
                 data.current +
                 "/" +
-                data.max;
+                data.max +
+                " · ფსონი $" +
+                data.stake;
     }
 );
 
@@ -4219,9 +5538,7 @@ socket.on(
     "gameStateUpdate",
     state => {
 
-        if (
-            !state
-        ) {
+        if (!state) {
             return;
         }
 
@@ -4257,12 +5574,14 @@ socket.on(
     "errorMessage",
     message => {
 
-        document
-            .getElementById(
-                "status"
-            )
-            .textContent =
-                message;
+        const status =
+            document
+                .getElementById(
+                    "status"
+                );
+
+        status.textContent =
+            message;
 
         document
             .getElementById(
@@ -4282,12 +5601,12 @@ socket.on(
                 "status"
             )
             .textContent =
-                "ერთ-ერთმა მოთამაშემ თამაში დატოვა.";
+                "ერთ-ერთმა მოთამაშემ მაგიდა დატოვა.";
     }
 );
 
 /* =========================================================
-   RENDER GAME
+   GAME RENDER
 ========================================================= */
 
 function renderGame(
@@ -4326,15 +5645,27 @@ function renderGame(
         .textContent =
             state.deckCount;
 
+    document
+        .getElementById(
+            "game-stake"
+        )
+        .textContent =
+            "$" +
+            state.stake;
+
     renderPlayers(
         state
     );
 
-    renderTable(
+    renderTableCards(
         state
     );
 
     renderMyCards(
+        state
+    );
+
+    renderScore(
         state
     );
 
@@ -4394,10 +5725,12 @@ function renderPlayers(
                 );
 
             seat.style.left =
-                pos.left + "%";
+                pos.left +
+                "%";
 
             seat.style.top =
-                pos.top + "%";
+                pos.top +
+                "%";
 
             let backs =
                 "";
@@ -4423,7 +5756,7 @@ function renderPlayers(
 
             seat.innerHTML =
                 \`
-                <div class="seat-card">
+                <div class="seat-box">
 
                     <div class="seat-avatar">
                         \${escapeHtml(
@@ -4437,12 +5770,15 @@ function renderPlayers(
                         \${escapeHtml(
                             player.name
                         )}
+                        \${player.isBot ? " 🤖" : ""}
                     </div>
 
-                    <div class="seat-count">
+                    <div class="seat-info">
                         კარტი:
                         \${player.cardCount}
-                        · ქულა:
+                        · ხელი:
+                        \${player.handPoints}
+                        · სულ:
                         \${player.totalPoints}
                     </div>
 
@@ -4461,7 +5797,7 @@ function renderPlayers(
 }
 
 /* =========================================================
-   SEAT POSITION
+   POSITION
 ========================================================= */
 
 function seatPosition(
@@ -4473,8 +5809,8 @@ function seatPosition(
 
     let myIndex =
         players.findIndex(
-            p =>
-                p.id ===
+            player =>
+                player.id ===
                 myId
         );
 
@@ -4496,98 +5832,58 @@ function seatPosition(
 
     const positions = {
 
-        2: [
-            {
-                left: 50,
-                top: 88
-            },
-            {
-                left: 50,
-                top: 12
-            }
-        ],
-
         3: [
+
             {
-                left: 50,
-                top: 88
+                left:
+                    50,
+                top:
+                    88
             },
+
             {
-                left: 20,
-                top: 25
+                left:
+                    20,
+                top:
+                    24
             },
+
             {
-                left: 80,
-                top: 25
+                left:
+                    80,
+                top:
+                    24
             }
         ],
 
         4: [
-            {
-                left: 50,
-                top: 88
-            },
-            {
-                left: 12,
-                top: 50
-            },
-            {
-                left: 50,
-                top: 12
-            },
-            {
-                left: 88,
-                top: 50
-            }
-        ],
 
-        5: [
             {
-                left: 50,
-                top: 88
+                left:
+                    50,
+                top:
+                    88
             },
-            {
-                left: 12,
-                top: 60
-            },
-            {
-                left: 25,
-                top: 18
-            },
-            {
-                left: 75,
-                top: 18
-            },
-            {
-                left: 88,
-                top: 60
-            }
-        ],
 
-        6: [
             {
-                left: 50,
-                top: 88
+                left:
+                    11,
+                top:
+                    50
             },
+
             {
-                left: 10,
-                top: 64
+                left:
+                    50,
+                top:
+                    12
             },
+
             {
-                left: 18,
-                top: 25
-            },
-            {
-                left: 50,
-                top: 12
-            },
-            {
-                left: 82,
-                top: 25
-            },
-            {
-                left: 90,
-                top: 64
+                left:
+                    89,
+                top:
+                    50
             }
         ]
     };
@@ -4595,7 +5891,7 @@ function seatPosition(
     return (
         positions[
             playerCount
-        ] || positions[2]
+        ] || positions[3]
     )[
         relative
     ];
@@ -4605,7 +5901,7 @@ function seatPosition(
    TABLE CARDS
 ========================================================= */
 
-function renderTable(
+function renderTableCards(
     state
 ) {
 
@@ -4658,8 +5954,7 @@ function renderTable(
 
                     group.appendChild(
                         createCardElement(
-                            card,
-                            false
+                            card
                         )
                     );
                 }
@@ -4702,16 +5997,17 @@ function renderMyCards(
 
             const element =
                 createCardElement(
-                    card,
-                    true
+                    card
                 );
 
             element.onclick =
-                () =>
+                () => {
+
                     toggleCard(
                         index,
                         element
                     );
+                };
 
             container.appendChild(
                 element
@@ -4725,15 +6021,14 @@ function renderMyCards(
 }
 
 /* =========================================================
-   CARD HTML
+   CARD
 ========================================================= */
 
 function createCardElement(
-    card,
-    interactive
+    card
 ) {
 
-    const div =
+    const element =
         document
             .createElement(
                 "div"
@@ -4746,7 +6041,7 @@ function createCardElement(
         card.suit ===
         "diamonds";
 
-    div.className =
+    element.className =
         "card" +
         (
             red
@@ -4756,38 +6051,33 @@ function createCardElement(
                 ""
         );
 
-    div.innerHTML =
+    const suit =
+        suitSymbol(
+            card.suit
+        );
+
+    element.innerHTML =
         \`
-        <div class="card-rank">
-            \${escapeHtml(
-                card.rank
-            )}
-            \${suitSymbol(
-                card.suit
-            )}
+        <div class="card-top">
+            \${escapeHtml(card.rank)}
+            \${suit}
         </div>
 
-        <div class="card-suit">
-            \${suitSymbol(
-                card.suit
-            )}
+        <div class="card-center">
+            \${suit}
         </div>
 
         <div class="card-bottom">
-            \${escapeHtml(
-                card.rank
-            )}
-            \${suitSymbol(
-                card.suit
-            )}
+            \${escapeHtml(card.rank)}
+            \${suit}
         </div>
         \`;
 
-    return div;
+    return element;
 }
 
 /* =========================================================
-   SELECT
+   SELECT CARD
 ========================================================= */
 
 function toggleCard(
@@ -4796,13 +6086,12 @@ function toggleCard(
 ) {
 
     const existing =
-        selectedCards
-            .indexOf(
-                index
-            );
+        selectedCards.indexOf(
+            index
+        );
 
     if (
-        existing >= 0
+        existing !== -1
     ) {
 
         selectedCards.splice(
@@ -4835,7 +6124,7 @@ function toggleCard(
 }
 
 /* =========================================================
-   PLAY BUTTON
+   PLAY
 ========================================================= */
 
 function updatePlayButton(
@@ -4848,9 +6137,7 @@ function updatePlayButton(
                 "play-button"
             );
 
-    if (
-        !state
-    ) {
+    if (!state) {
 
         button.disabled =
             true;
@@ -4875,7 +6162,9 @@ function updatePlayButton(
         selectedCards.length ===
         0
         ||
-        state.isProcessing;
+        state.isProcessing
+        ||
+        state.gameOver;
 }
 
 function playSelectedCards() {
@@ -4890,7 +6179,6 @@ function playSelectedCards() {
     socket.emit(
         "playCards",
         {
-
             cardIndices:
                 selectedCards
         }
@@ -4919,7 +6207,7 @@ function updateStatus(
     ) {
 
         status.textContent =
-            "თამაში დასრულებულია.";
+            "🏆 თამაში დასრულებულია";
 
         return;
     }
@@ -4929,7 +6217,7 @@ function updateStatus(
     ) {
 
         status.textContent =
-            "სვლა დასრულდა...";
+            "მაგიდის კარტები ითვლება...";
 
         return;
     }
@@ -4939,9 +6227,7 @@ function updateStatus(
             state.currentTurnIndex
         ];
 
-    if (
-        !activePlayer
-    ) {
+    if (!activePlayer) {
         return;
     }
 
@@ -4951,7 +6237,16 @@ function updateStatus(
     ) {
 
         status.textContent =
-            "შენი სვლაა!";
+            "🎯 შენი სვლაა";
+
+    } else if (
+        activePlayer.isBot
+    ) {
+
+        status.textContent =
+            "🤖 " +
+            activePlayer.name +
+            " თამაშობს...";
 
     } else {
 
@@ -4959,6 +6254,77 @@ function updateStatus(
             activePlayer.name +
             "-ის სვლაა";
     }
+}
+
+/* =========================================================
+   SCORE
+========================================================= */
+
+function renderScore(
+    state
+) {
+
+    const container =
+        document
+            .getElementById(
+                "score-content"
+            );
+
+    let html =
+        \`
+        <div class="score-row header">
+
+            <div>
+                მოთამაშე
+            </div>
+
+            <div>
+                აღებული
+            </div>
+
+            <div>
+                ხელის ქულა
+            </div>
+
+            <div>
+                საერთო
+            </div>
+
+        </div>
+        \`;
+
+    state.players.forEach(
+        player => {
+
+            html +=
+                \`
+                <div class="score-row">
+
+                    <div>
+                        \${escapeHtml(
+                            player.name
+                        )}
+                    </div>
+
+                    <div>
+                        \${player.takenCount}
+                    </div>
+
+                    <div>
+                        \${player.handPoints}
+                    </div>
+
+                    <div>
+                        \${player.totalPoints}
+                    </div>
+
+                </div>
+                \`;
+        }
+    );
+
+    container.innerHTML =
+        html;
 }
 
 /* =========================================================
@@ -4970,16 +6336,12 @@ function suitSymbol(
 ) {
 
     const map = {
-
         spades:
             "♠",
-
         clubs:
             "♣",
-
         hearts:
             "♥",
-
         diamonds:
             "♦"
     };
@@ -5045,7 +6407,7 @@ function escapeHtml(
 );
 
 /* =========================================================
-   START SERVER
+   SERVER
 ========================================================= */
 
 server.listen(
@@ -5053,13 +6415,36 @@ server.listen(
     () => {
 
         console.log(
-            "BURA VIP CLUB running on port " +
+            "===================================="
+        );
+
+        console.log(
+            "BURA VIP CLUB STARTED"
+        );
+
+        console.log(
+            "PORT:",
             PORT
         );
 
         console.log(
-            "Deck cards:",
-            createDeck().length
+            "DECK:",
+            createDeck().length,
+            "cards"
+        );
+
+        console.log(
+            "TEST USER:",
+            TESTER_USERNAME
+        );
+
+        console.log(
+            "STARTING BALANCE: $",
+            STARTING_BALANCE
+        );
+
+        console.log(
+            "===================================="
         );
     }
 );
