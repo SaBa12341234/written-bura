@@ -7,7 +7,11 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+    cors: {
+        origin: '*'
+    }
+});
 
 const PORT = process.env.PORT || 10000;
 
@@ -16,7 +20,15 @@ app.use(express.json());
 const TESTER_USERNAME = 'saba123';
 const STARTING_BALANCE = 1000;
 
-const USERS_FILE = path.join(__dirname, 'users.json');
+const USERS_FILE = path.join(
+    __dirname,
+    'users.json'
+);
+
+const ALLOWED_CAPACITIES = [
+    3,
+    4
+];
 
 const ALLOWED_STAKES = [
     5,
@@ -26,10 +38,7 @@ const ALLOWED_STAKES = [
     100
 ];
 
-const ALLOWED_CAPACITIES = [
-    3,
-    4
-];
+const MAX_PARTIES = 4;
 
 /* =========================================================
    USERS
@@ -67,6 +76,8 @@ try {
         'users.json read error:',
         e
     );
+
+    users = [];
 }
 
 function saveUsers() {
@@ -277,7 +288,7 @@ app.post(
                         false,
 
                     message:
-                        'რეგისტრაციისთვის საჭიროა წესებსა და პირობებზე თანხმობა.'
+                        'რეგისტრაციისთვის მონიშნე წესებსა და პირობებზე თანხმობა.'
                 });
         }
 
@@ -635,7 +646,7 @@ app.get(
             service:
                 'written-bura',
 
-            cards:
+            deck:
                 36
         });
     }
@@ -739,17 +750,16 @@ function pushFeed(
         text,
 
         time:
-            new Date()
-                .toISOString()
+            Date.now()
     });
 
     if (
         liveFeed.length >
-        12
+        10
     ) {
 
         liveFeed.length =
-            12;
+            10;
     }
 
     io.emit(
@@ -861,7 +871,7 @@ function createRoom(
 }
 
 /* =========================================================
-   HAND
+   NEW HAND
 ========================================================= */
 
 function startNewHand(
@@ -1006,8 +1016,26 @@ function startNewHand(
 }
 
 /* =========================================================
-   CARD RULES
+   RULES
 ========================================================= */
+
+function isMaliutka(
+    cards
+) {
+
+    return (
+        cards.length ===
+        5
+        &&
+        cards.every(
+            card =>
+                card.suit ===
+                cards[
+                    0
+                ].suit
+        )
+    );
+}
 
 function cardBeatsCard(
     lead,
@@ -1062,24 +1090,6 @@ function cardBeatsCard(
         >
         RANKS_ORDER.indexOf(
             lead.rank
-        )
-    );
-}
-
-function isMaliutka(
-    cards
-) {
-
-    return (
-        cards.length ===
-        5
-        &&
-        cards.every(
-            card =>
-                card.suit ===
-                cards[
-                    0
-                ].suit
         )
     );
 }
@@ -1219,12 +1229,14 @@ function getWinningPlayIndex(
 }
 
 /* =========================================================
-   CLIENT GAME STATE
+   CLIENT STATE
 ========================================================= */
 
 function getClientGameState(
     room,
-    forPlayerId
+    forPlayerId,
+    revealAll =
+        false
 ) {
 
     const gs =
@@ -1308,10 +1320,32 @@ function getClientGameState(
             }
         );
 
-    const visible =
+    const visibleCards =
         {};
 
+    /*
+        TESTER ხედავს ყველას კარტს.
+    */
+
     if (
+        revealAll
+    ) {
+
+        for (
+            const player of
+            room.players
+        ) {
+
+            visibleCards[
+                player.id
+            ] =
+                gs.playersCards[
+                    player.id
+                ] ||
+                [];
+        }
+
+    } else if (
         forPlayerId
         &&
         gs.playersCards[
@@ -1319,7 +1353,7 @@ function getClientGameState(
         ]
     ) {
 
-        visible[
+        visibleCards[
             forPlayerId
         ] =
             gs.playersCards[
@@ -1366,7 +1400,7 @@ function getClientGameState(
         players,
 
         playersCards:
-            visible,
+            visibleCards,
 
         viewingPlayerId:
             forPlayerId,
@@ -1388,9 +1422,16 @@ function getClientGameState(
             {},
 
         gameOver:
-            gs.gameOver
+            gs.gameOver,
+
+        testerRevealAll:
+            revealAll
     };
 }
+
+/* =========================================================
+   BROADCAST
+========================================================= */
 
 function broadcastGameState(
     room
@@ -1408,13 +1449,17 @@ function broadcastGameState(
             continue;
         }
 
+        const revealAll =
+            !!player.isTester;
+
         io.to(
             player.id
         ).emit(
             'gameStateUpdate',
             getClientGameState(
                 room,
-                player.id
+                player.id,
+                revealAll
             )
         );
     }
@@ -1450,8 +1495,7 @@ function refillHands(
                 0;
 
             step <
-            room.players
-                .length;
+            room.players.length;
 
             step++
         ) {
@@ -1539,6 +1583,11 @@ function finishHand(
                         card.value,
                     0
                 );
+
+            /*
+                სატესტო მიმდინარე წესი:
+                0 ქულა = -120
+            */
 
             const finalPoints =
                 raw ===
@@ -1655,7 +1704,7 @@ function finishHand(
 }
 
 /* =========================================================
-   COMPLETE TRICK
+   TRICK
 ========================================================= */
 
 function completeTrick(
@@ -1742,7 +1791,7 @@ function completeTrick(
             gs.isProcessing =
                 false;
 
-            const empty =
+            const allEmpty =
                 room.players
                     .every(
                         player =>
@@ -1756,7 +1805,7 @@ function completeTrick(
                     );
 
             if (
-                empty
+                allEmpty
             ) {
 
                 finishHand(
@@ -1775,7 +1824,7 @@ function completeTrick(
             }
 
         },
-        1250
+        1100
     );
 }
 
@@ -1886,7 +1935,7 @@ function scheduleBotTurn(
             );
 
         },
-        650
+        600
     );
 }
 
@@ -2047,18 +2096,19 @@ function getLobbyState() {
             ALLOWED_CAPACITIES
         ) {
 
-            const matching =
+            const waitingRooms =
                 Object.values(
                     rooms
-                ).filter(
+                )
+                .filter(
                     room =>
+                        !room.gameState
+                        &&
                         room.stake ===
                         stake
                         &&
                         room.maxPlayers ===
                         capacity
-                        &&
-                        !room.gameState
                 );
 
             tables.push({
@@ -2073,7 +2123,7 @@ function getLobbyState() {
                 capacity,
 
                 waiting:
-                    matching.reduce(
+                    waitingRooms.reduce(
                         (
                             sum,
                             room
@@ -2082,9 +2132,6 @@ function getLobbyState() {
                             room.players.length,
                         0
                     ),
-
-                roomCount:
-                    matching.length,
 
                 label:
                     stake >=
@@ -2098,7 +2145,7 @@ function getLobbyState() {
                                 ?
                                 'PREMIUM TABLE'
                                 :
-                                'CLASSIC GAME'
+                                'CLASSIC TABLE'
                         )
             });
         }
@@ -2106,10 +2153,11 @@ function getLobbyState() {
 
     return {
 
-        tables,
-
         online:
-            io.engine.clientsCount,
+            io.engine
+                .clientsCount,
+
+        tables,
 
         feed:
             liveFeed,
@@ -2117,14 +2165,15 @@ function getLobbyState() {
         tournaments: [
 
             {
+
                 id:
                     1,
 
-                date:
-                    '22.09.2026',
-
                 name:
                     'Autumn Crown',
+
+                date:
+                    '22.09.2026',
 
                 prize:
                     1500,
@@ -2134,14 +2183,15 @@ function getLobbyState() {
             },
 
             {
+
                 id:
                     2,
 
-                date:
-                    '29.09.2026',
-
                 name:
                     'Royal Four',
+
+                date:
+                    '29.09.2026',
 
                 prize:
                     3000,
@@ -2151,14 +2201,15 @@ function getLobbyState() {
             },
 
             {
+
                 id:
                     3,
 
-                date:
-                    '06.10.2026',
-
                 name:
                     'Written Bura Cup',
+
+                date:
+                    '06.10.2026',
 
                 prize:
                     5000,
@@ -2182,6 +2233,10 @@ io.on(
             'lobbyUpdate',
             getLobbyState()
         );
+
+        /* =================================================
+           JOIN
+        ================================================= */
 
         socket.on(
             'joinTable',
@@ -2251,7 +2306,7 @@ io.on(
                     Math.max(
                         1,
                         Math.min(
-                            4,
+                            MAX_PARTIES,
                             parties
                         )
                     );
@@ -2288,7 +2343,8 @@ io.on(
                 let room =
                     Object.values(
                         rooms
-                    ).find(
+                    )
+                    .find(
                         item =>
                             !item.gameState
                             &&
@@ -2412,7 +2468,9 @@ io.on(
                 );
 
                 /*
-                    TEST MODE
+                    TEST MODE:
+                    დარჩენილი ადგილები
+                    ავტომატურად შეივსება.
                 */
 
                 if (
@@ -2516,6 +2574,10 @@ io.on(
                 }
             }
         );
+
+        /* =================================================
+           PLAY
+        ================================================= */
 
         socket.on(
             'playCards',
@@ -2727,6 +2789,10 @@ io.on(
             }
         );
 
+        /* =================================================
+           DISCONNECT
+        ================================================= */
+
         socket.on(
             'disconnect',
             () => {
@@ -2788,13 +2854,13 @@ io.on(
 
 const PAGE =
 String.raw`
-<!DOCTYPE html>
+<!doctype html>
 
 <html lang="ka">
 
 <head>
 
-<meta charset="UTF-8">
+<meta charset="utf-8">
 
 <meta
     name="viewport"
@@ -2824,15 +2890,15 @@ body {
         100%;
 
     font-family:
-        Georgia,
-        "Times New Roman",
-        serif;
+        Inter,
+        Arial,
+        sans-serif;
 
     background:
-        #100306;
+        #100307;
 
     color:
-        #f4eadc;
+        #f6eadc;
 }
 
 button,
@@ -2858,22 +2924,25 @@ button {
 :root {
 
     --wine:
-        #26070d;
+        #2a0710;
 
     --wine2:
-        #3a0d16;
+        #420b18;
 
     --gold:
-        #d7aa59;
+        #d8ae62;
 
     --gold2:
-        #f1cd83;
+        #f0cf88;
 
     --cream:
-        #eadcc8;
+        #efe2cf;
+
+    --muted:
+        #aa9684;
 
     --line:
-        rgba(215,170,89,.30);
+        rgba(216,174,98,.28);
 }
 
 body {
@@ -2881,49 +2950,20 @@ body {
     background:
 
         radial-gradient(
-            circle at 50% 20%,
-            rgba(92,18,31,.5),
-            transparent 38%
+            circle at 50% 10%,
+            rgba(109,25,42,.45),
+            transparent 32%
         ),
 
         linear-gradient(
             135deg,
-            #100306,
-            #25060d 45%,
-            #130306
+            #100307,
+            #270710 48%,
+            #100307
         );
 
     min-height:
         100vh;
-
-    overflow-x:
-        hidden;
-}
-
-body:before {
-
-    content:
-        "";
-
-    position:
-        fixed;
-
-    inset:
-        0;
-
-    pointer-events:
-        none;
-
-    opacity:
-        .18;
-
-    background:
-        repeating-linear-gradient(
-            135deg,
-            transparent 0 22px,
-            rgba(255,255,255,.018)
-            22px 24px
-        );
 }
 
 .shell {
@@ -2932,20 +2972,17 @@ body:before {
         min(1180px,96vw);
 
     margin:
-        0 auto;
+        auto;
 
     padding-bottom:
-        30px;
+        35px;
 }
 
 /* =========================================================
-   TOP
+   HEADER
 ========================================================= */
 
-.top {
-
-    min-height:
-        58px;
+.topbar {
 
     display:
         flex;
@@ -2954,46 +2991,47 @@ body:before {
         center;
 
     gap:
-        16px;
+        12px;
+
+    min-height:
+        70px;
 }
 
 .brand {
 
+    font-family:
+        Georgia,
+        serif;
+
     font-size:
-        25px;
+        22px;
 
     line-height:
-        .85;
+        .9;
 
     color:
         var(--cream);
 
-    font-weight:
-        700;
-
     min-width:
-        190px;
+        170px;
 }
 
-.brand span {
+.brand b {
 
     display:
         block;
 
-    color:
-        var(--gold2);
-
     font-size:
         34px;
+
+    color:
+        var(--gold2);
 }
 
 .search {
 
     margin-left:
         auto;
-
-    position:
-        relative;
 }
 
 .search input {
@@ -3002,117 +3040,80 @@ body:before {
         210px;
 
     height:
-        32px;
+        34px;
+
+    background:
+        #2a2022;
 
     border:
         1px solid
-        rgba(255,255,255,.08);
+        #4b3538;
+
+    color:
+        white;
 
     border-radius:
-        4px;
-
-    background:
-        #2b2224;
-
-    color:
-        #fff;
-
-    padding:
-        0 12px 0 30px;
-
-    font-size:
-        11px;
-}
-
-.search:before {
-
-    content:
-        "⌕";
-
-    position:
-        absolute;
-
-    left:
-        9px;
-
-    top:
         5px;
 
-    color:
-        #847679;
-}
-
-.top-link,
-.top-btn {
-
-    color:
-        #d9cabb;
-
-    background:
-        none;
-
-    border:
-        0;
-
-    font-size:
-        10px;
-
-    text-transform:
-        uppercase;
-}
-
-.top-btn {
-
     padding:
-        8px 14px;
+        0 10px;
+}
+
+.topbtn {
 
     border:
         1px solid
         var(--gold);
 
+    color:
+        #e9dbc8;
+
+    background:
+        transparent;
+
     border-radius:
         5px;
+
+    padding:
+        8px 12px;
+
+    font-size:
+        11px;
 }
 
-.top-btn.gold {
+.topbtn.gold {
 
     background:
         linear-gradient(
-            #e7c27e,
-            #b8863f
+            #efcc89,
+            #b88740
         );
 
     color:
-        #241208;
-
-    border-color:
-        #e4be78;
+        #2d170d;
 }
 
 .subnav {
 
-    margin-left:
-        260px;
-
-    height:
-        34px;
-
-    border-top:
-        1px solid
-        rgba(255,255,255,.05);
-
-    border-bottom:
-        1px solid
-        rgba(215,170,89,.16);
-
     display:
         flex;
 
-    align-items:
-        center;
-
     gap:
-        25px;
+        20px;
+
+    margin-left:
+        210px;
+
+    border-top:
+        1px solid
+        rgba(255,255,255,.04);
+
+    border-bottom:
+        1px solid
+        var(--line);
+
+    padding:
+        9px 0;
 }
 
 .subnav button {
@@ -3124,51 +3125,70 @@ body:before {
         0;
 
     color:
-        #ad9583;
+        #b49c89;
 
     font-size:
-        10px;
-
-    text-transform:
-        uppercase;
+        11px;
 }
 
-.subnav button:hover {
+.userPill {
+
+    display:
+        none;
+
+    padding:
+        6px 10px;
+
+    border:
+        1px solid
+        var(--line);
+
+    border-radius:
+        20px;
+
+    font-size:
+        11px;
 
     color:
-        var(--gold2);
+        #e8d6c2;
+}
+
+.userPill.show {
+
+    display:
+        block;
 }
 
 /* =========================================================
    HERO
 ========================================================= */
 
-.hero-row {
+.heroRow {
 
     display:
         grid;
 
     grid-template-columns:
-        1fr 265px;
+        1fr 280px;
 
     gap:
-        12px;
-
-    align-items:
-        start;
+        14px;
 
     margin-top:
-        8px;
+        14px;
 }
 
 .hero {
 
     height:
-        255px;
+        290px;
 
     border:
         1px solid
         var(--gold);
+
+    border-radius:
+        6px;
 
     position:
         relative;
@@ -3180,458 +3200,347 @@ body:before {
 
         linear-gradient(
             90deg,
-            rgba(30,7,10,.96),
-            rgba(63,25,28,.78)
+            rgba(28,6,11,.95),
+            rgba(91,43,36,.72)
         ),
 
         radial-gradient(
-            circle at 70% 45%,
-            #9e694c 0 12%,
-            transparent 13%
+            circle at 72% 48%,
+            #b47d60 0 15%,
+            transparent 16%
         ),
 
         linear-gradient(
             135deg,
-            #391216,
-            #181015
+            #43141b,
+            #171012
         );
-
-    box-shadow:
-        inset 0 0 0 5px
-        rgba(215,170,89,.08);
 }
 
 .hero:after {
 
     content:
-        "♠   ♥   ♦   ♣";
+        "♠  ♥  ♦  ♣";
 
     position:
         absolute;
 
     right:
-        25px;
-
-    bottom:
         24px;
 
+    bottom:
+        25px;
+
     font-size:
-        48px;
+        56px;
 
     letter-spacing:
-        12px;
+        8px;
 
     color:
-        rgba(241,205,131,.15);
+        rgba(245,220,177,.14);
 
     transform:
-        rotate(-6deg);
+        rotate(-7deg);
 }
 
-.hero-copy {
+.heroCopy {
 
     position:
         absolute;
 
     left:
-        35px;
+        34px;
 
     top:
         55px;
 
     width:
-        360px;
+        390px;
 }
 
-.hero-copy h1 {
+.heroCopy h1 {
+
+    font-family:
+        Georgia,
+        serif;
+
+    color:
+        #e5c69d;
+
+    font-size:
+        29px;
+
+    line-height:
+        1.03;
 
     margin:
         0 0 14px;
-
-    font-size:
-        26px;
-
-    line-height:
-        1;
-
-    color:
-        #e2c79d;
 }
 
-.hero-copy p {
-
-    font-size:
-        12px;
+.heroCopy p {
 
     color:
-        #bda797;
+        #c2aa98;
+
+    font-size:
+        13px;
 
     line-height:
         1.6;
 }
 
-.hero-copy button {
+.heroCopy button {
 
     margin-top:
         10px;
 
     width:
-        120px;
+        130px;
 
     height:
-        35px;
+        38px;
 
     border:
         0;
 
     border-radius:
-        4px;
+        5px;
 
     background:
         linear-gradient(
-            #efc87d,
-            #bc8435
+            #efca81,
+            #bd873b
         );
 
-    color:
-        #28150a;
-
     font-weight:
-        700;
-}
+        800;
 
-.dots {
-
-    position:
-        absolute;
-
-    left:
-        50%;
-
-    bottom:
-        8px;
-
-    transform:
-        translateX(-50%);
-
-    display:
-        flex;
-
-    gap:
-        5px;
-}
-
-.dots i {
-
-    width:
-        22px;
-
-    height:
-        5px;
-
-    border-radius:
-        8px;
-
-    background:
-        #493127;
-}
-
-.dots i.active {
-
-    background:
-        var(--gold2);
+    color:
+        #2b170d;
 }
 
 /* =========================================================
-   REGISTRATION
+   REGISTER
 ========================================================= */
 
-.register-card {
-
-    position:
-        relative;
-
-    margin-top:
-        -62px;
+.regCard {
 
     background:
         linear-gradient(
-            #e6d9ca,
-            #c9b7a7
+            #eadfd3,
+            #cdbbaa
         );
 
-    border-radius:
-        10px 10px 7px 7px;
-
-    padding:
-        17px 18px 44px;
-
     color:
-        #5d4939;
-
-    box-shadow:
-        0 18px 30px
-        rgba(0,0,0,.35);
+        #584738;
 
     border:
         1px solid
-        #c7a86f;
-}
+        #c5a66d;
 
-.register-card:before {
+    border-radius:
+        10px;
 
-    content:
-        "";
+    padding:
+        18px;
+
+    box-shadow:
+        0 20px 35px
+        rgba(0,0,0,.35);
 
     position:
-        absolute;
-
-    top:
-        -10px;
-
-    right:
-        35px;
-
-    border-left:
-        12px solid
-        transparent;
-
-    border-right:
-        12px solid
-        transparent;
-
-    border-bottom:
-        10px solid
-        #d9c8b8;
+        relative;
 }
 
-.register-title {
+.regCard h3 {
 
-    font-size:
-        14px;
+    font-family:
+        Georgia,
+        serif;
 
     color:
-        #9a774c;
+        #8d6b47;
 
-    margin-bottom:
-        9px;
+    font-size:
+        16px;
+
+    margin:
+        0 0 4px;
 }
 
-.register-title b {
+.regCard h3 b {
 
     display:
         block;
 
     color:
-        #4e3a2f;
+        #4a382e;
 
     font-size:
-        15px;
+        17px;
 }
 
-.reg-field {
-
-    position:
-        relative;
-
-    margin:
-        8px 0;
-}
-
-.reg-field input {
+.regCard input {
 
     width:
         100%;
 
     height:
-        31px;
+        34px;
+
+    margin:
+        6px 0;
+
+    background:
+        #f2ebe4;
 
     border:
         1px solid
-        #d8cabd;
+        #d5c7bb;
 
     border-radius:
         5px;
 
-    background:
-        #eee6dd;
-
     padding:
         0 10px;
-
-    color:
-        #3f3129;
-
-    font-size:
-        10px;
 }
 
 .terms {
 
+    font-size:
+        10px;
+
     display:
         flex;
-
-    align-items:
-        center;
 
     gap:
         6px;
 
-    font-size:
-        9px;
+    align-items:
+        center;
 
     margin:
         8px 0;
 }
 
-.register-card .sign {
+.regCard .sign {
 
     width:
         100%;
 
     height:
-        31px;
+        34px;
 
     border:
         0;
 
     border-radius:
-        4px;
+        5px;
 
     background:
         linear-gradient(
-            #e7bd70,
-            #c9913e
+            #e9c477,
+            #c08a3c
         );
 
     color:
-        #352014;
+        #321d11;
 
     font-weight:
-        700;
+        800;
 }
 
-.ribbon {
-
-    position:
-        absolute;
-
-    left:
-        -10px;
-
-    right:
-        -10px;
-
-    bottom:
-        -14px;
-
-    background:
-        linear-gradient(
-            #d8b564,
-            #a97934
-        );
-
-    color:
-        #3b260e;
-
-    text-align:
-        center;
-
-    padding:
-        8px 20px 10px;
+.msg {
 
     font-size:
         10px;
 
-    clip-path:
-        polygon(
-            0 0,
-            100% 0,
-            94% 100%,
-            50% 85%,
-            6% 100%
-        );
+    min-height:
+        16px;
+
+    margin-top:
+        8px;
 }
 
 /* =========================================================
-   LOBBY TABLES
+   LOBBY
 ========================================================= */
 
-.section-title {
+.sectionTitle {
 
-    margin:
-        25px 0 9px;
+    font-family:
+        Georgia,
+        serif;
 
     color:
-        #c7a88a;
+        #c6a98e;
 
     font-size:
-        17px;
+        18px;
 
-    text-transform:
-        uppercase;
+    margin:
+        26px 0 10px;
 }
 
-.content-grid {
+.lobbyGrid {
 
     display:
         grid;
 
     grid-template-columns:
-        1fr 1fr 1fr 1.02fr;
+        repeat(3,1fr)
+        1.1fr;
 
     gap:
         12px;
 }
 
-.table-card,
-.live-card {
+.tableCard,
+.feedCard {
 
     border:
         1px solid
-        rgba(215,170,89,.45);
+        rgba(216,174,98,.4);
 
     background:
         linear-gradient(
-            #351016,
-            #1b090c
+            #371018,
+            #1b090d
         );
 
-    min-height:
-        172px;
-
     border-radius:
-        5px;
+        6px;
 
     overflow:
         hidden;
 }
 
-.table-visual {
+.tableVisual {
 
     height:
-        88px;
-
-    position:
-        relative;
+        90px;
 
     background:
 
         radial-gradient(
             ellipse at 50% 58%,
-            #225744 0 28%,
-            #1d372f 29% 40%,
-            transparent 41%
+            #215b45 0 29%,
+            #1e3c31 30% 42%,
+            transparent 43%
         ),
 
         linear-gradient(
             135deg,
-            #6f4030,
-            #271013
+            #714636,
+            #281015
         );
+
+    position:
+        relative;
 }
 
-.table-visual:before {
+.tableVisual:before {
 
     content:
         "♠  ♥  ♣";
@@ -3643,58 +3552,61 @@ body:before {
         50%;
 
     top:
-        47%;
+        48%;
 
     transform:
         translate(-50%,-50%);
 
+    font-size:
+        19px;
+
     color:
         #e7dbc8;
-
-    font-size:
-        18px;
 }
 
-.table-body {
+.tableBody {
 
     padding:
-        8px 9px;
-}
-
-.table-title {
-
-    font-size:
-        12px;
-
-    color:
-        #d8c3ad;
-}
-
-.table-meta {
-
-    font-size:
         9px;
+}
+
+.tableTitle {
 
     color:
-        #8e7667;
+        #e1c8ae;
+
+    font-size:
+        13px;
+}
+
+.tableMeta {
+
+    color:
+        #9d8370;
+
+    font-size:
+        10px;
 
     line-height:
-        1.5;
+        1.45;
+
+    margin-top:
+        4px;
 }
 
-.join {
+.joinBtn {
 
     float:
         right;
 
     margin-top:
-        -28px;
+        -30px;
 
     width:
-        60px;
+        62px;
 
     height:
-        22px;
+        24px;
 
     border:
         0;
@@ -3704,45 +3616,42 @@ body:before {
 
     background:
         linear-gradient(
-            #e8c276,
-            #bd893d
+            #eac478,
+            #bb873d
         );
 
     color:
-        #2c180d;
+        #2a170d;
 
     font-size:
-        9px;
+        10px;
 }
 
-.live-card {
+.feedCard {
 
     padding:
         12px;
 }
 
-.live-card h3 {
+.feedCard h3 {
 
     margin:
-        0 0 10px;
+        0 0 9px;
 
     color:
-        #d2b89d;
-
-    font-size:
-        13px;
+        #ddc0a1;
 }
 
-.feed-item {
+.feedItem {
 
     font-size:
-        9px;
+        10px;
 
     color:
-        #baa695;
+        #bda998;
 
     padding:
-        6px 0;
+        7px 0;
 
     border-bottom:
         1px solid
@@ -3762,7 +3671,7 @@ body:before {
         0;
 
     background:
-        rgba(0,0,0,.72);
+        rgba(0,0,0,.75);
 
     display:
         none;
@@ -3774,10 +3683,10 @@ body:before {
         center;
 
     z-index:
-        200;
+        1000;
 
     padding:
-        18px;
+        20px;
 }
 
 .modal.open {
@@ -3786,21 +3695,21 @@ body:before {
         flex;
 }
 
-.modal-box {
+.modalBox {
 
     width:
-        min(600px,96vw);
+        min(620px,96vw);
 
     max-height:
-        82vh;
+        86vh;
 
     overflow:
         auto;
 
     background:
         linear-gradient(
-            #2d0c12,
-            #16070a
+            #301018,
+            #16070b
         );
 
     border:
@@ -3812,37 +3721,31 @@ body:before {
 
     padding:
         20px;
-
-    box-shadow:
-        0 25px 80px
-        #000;
 }
 
-.modal-head {
+.modalHead {
 
     display:
         flex;
 
-    justify-content:
-        space-between;
-
     align-items:
         center;
+
+    justify-content:
+        space-between;
 }
 
-.modal-head h2 {
-
-    margin:
-        0;
+.modalHead h2 {
 
     color:
         var(--gold2);
 
-    font-size:
-        18px;
+    font-family:
+        Georgia,
+        serif;
 }
 
-.close {
+.closeBtn {
 
     background:
         none;
@@ -3851,45 +3754,45 @@ body:before {
         0;
 
     color:
-        #fff;
+        white;
 
     font-size:
-        22px;
+        24px;
 }
 
-.modal p,
-.modal li {
+.modalBox p,
+.modalBox li {
 
     font-size:
-        12px;
+        13px;
 
     color:
-        #cbb9aa;
+        #cfbbab;
 
     line-height:
         1.6;
 }
 
-.login-form input {
+.loginForm input {
 
     width:
         100%;
 
     height:
-        38px;
+        40px;
 
     margin:
         6px 0;
 
     background:
-        #1d1113;
+        #1b1113;
 
     border:
         1px solid
-        #5a3436;
+        #5c373b;
 
     color:
-        #fff;
+        white;
 
     padding:
         0 10px;
@@ -3898,22 +3801,16 @@ body:before {
         5px;
 }
 
-.login-form button {
+.loginForm button {
 
     width:
         100%;
 
     height:
-        38px;
+        40px;
 
     margin-top:
         8px;
-
-    background:
-        linear-gradient(
-            #e8c278,
-            #bb8539
-        );
 
     border:
         0;
@@ -3921,45 +3818,27 @@ body:before {
     border-radius:
         5px;
 
-    color:
-        #2a160c;
+    background:
+        linear-gradient(
+            #efc97f,
+            #b8843b
+        );
 
     font-weight:
-        700;
+        800;
 }
 
-.t-item {
-
-    display:
-        grid;
-
-    grid-template-columns:
-        1fr auto;
-
-    gap:
-        7px;
+.profileStat {
 
     padding:
-        8px 0;
+        10px;
 
     border-bottom:
         1px solid
-        rgba(255,255,255,.05);
+        rgba(255,255,255,.06);
 
     font-size:
-        10px;
-}
-
-.t-item b {
-
-    color:
-        #dcc69e;
-}
-
-.t-item span {
-
-    color:
-        #937d6d;
+        13px;
 }
 
 /* =========================================================
@@ -3978,16 +3857,16 @@ body:before {
         18px;
 
     z-index:
-        150;
+        900;
 }
 
-.chat-btn {
+.chatBtn {
 
     width:
-        46px;
+        48px;
 
     height:
-        46px;
+        48px;
 
     border-radius:
         50%;
@@ -3997,15 +3876,15 @@ body:before {
 
     background:
         linear-gradient(
-            #d9b16a,
-            #9d6c2d
+            #dfbd74,
+            #a17130
         );
 
     font-size:
         20px;
 }
 
-.chat-box {
+.chatBox {
 
     position:
         absolute;
@@ -4014,13 +3893,13 @@ body:before {
         0;
 
     bottom:
-        56px;
+        58px;
 
     width:
-        280px;
+        290px;
 
     background:
-        #221014;
+        #221015;
 
     border:
         1px solid
@@ -4036,13 +3915,13 @@ body:before {
         none;
 }
 
-.chat-box.open {
+.chatBox.open {
 
     display:
         block;
 }
 
-.chat-log {
+.chatLog {
 
     height:
         150px;
@@ -4051,10 +3930,7 @@ body:before {
         auto;
 
     background:
-        #13090b;
-
-    border-radius:
-        5px;
+        #12090b;
 
     padding:
         8px;
@@ -4063,50 +3939,47 @@ body:before {
         10px;
 
     color:
-        #bca99a;
+        #baa796;
 }
 
-.chat-send {
+.chatSend {
 
     display:
         flex;
 
     gap:
-        6px;
+        5px;
 
     margin-top:
         6px;
 }
 
-.chat-send input {
+.chatSend input {
 
     flex:
         1;
 
     background:
-        #12090b;
+        #130a0c;
 
     border:
         1px solid
-        #4e2e31;
+        #4e2d31;
 
     color:
-        #fff;
+        white;
 
     padding:
         7px;
 }
 
-.chat-send button {
+.chatSend button {
 
     background:
-        #c99443;
+        #c99545;
 
     border:
         0;
-
-    padding:
-        0 12px;
 }
 
 /* =========================================================
@@ -4125,43 +3998,47 @@ body:before {
         16px;
 
     background:
-        #080405;
+        #070405;
 }
 
-.game-top {
+.gameTop {
 
     width:
-        min(1100px,96vw);
+        min(1120px,96vw);
 
     margin:
-        0 auto 12px;
+        auto;
 
     display:
         flex;
 
-    flex-wrap:
-        wrap;
-
-    gap:
-        8px;
+    justify-content:
+        space-between;
 
     align-items:
         center;
 
-    justify-content:
-        space-between;
+    gap:
+        10px;
+
+    flex-wrap:
+        wrap;
 }
 
-.game-brand {
+.gameBrand {
+
+    font-family:
+        Georgia,
+        serif;
 
     color:
         var(--gold2);
 
     font-size:
-        18px;
+        20px;
 }
 
-.game-info {
+.gameStats {
 
     display:
         flex;
@@ -4175,6 +4052,9 @@ body:before {
 
 .stat {
 
+    min-width:
+        90px;
+
     padding:
         8px 10px;
 
@@ -4186,10 +4066,16 @@ body:before {
         8px;
 
     background:
-        #241014;
+        linear-gradient(
+            #291015,
+            #15080b
+        );
 
     font-size:
-        10px;
+        9px;
+
+    color:
+        #a99483;
 }
 
 .stat b {
@@ -4198,10 +4084,13 @@ body:before {
         block;
 
     color:
-        var(--gold2);
+        #f2d493;
 
     font-size:
-        13px;
+        14px;
+
+    margin-top:
+        2px;
 }
 
 .status {
@@ -4213,23 +4102,23 @@ body:before {
         #f0ce8e;
 
     font-weight:
-        700;
+        800;
 
     margin:
-        8px;
+        9px;
 }
 
 /* =========================================================
-   GAME TABLE
+   TABLE
 ========================================================= */
 
-.table-board {
+.tableBoard {
 
     width:
         min(1040px,96vw);
 
     height:
-        520px;
+        530px;
 
     margin:
         auto;
@@ -4242,19 +4131,19 @@ body:before {
 
     border:
         15px solid
-        #321a0c;
+        #321a0d;
 
     background:
         radial-gradient(
             ellipse,
-            #1f7656,
-            #114634 62%,
+            #227657,
+            #124933 62%,
             #09291f
         );
 
     box-shadow:
 
-        0 25px 70px
+        0 28px 75px
         #000,
 
         inset 0 0 60px
@@ -4270,55 +4159,61 @@ body:before {
         translate(-50%,-50%);
 
     width:
-        135px;
+        145px;
 
     text-align:
         center;
 }
 
-.seat-box {
+.seatBox {
 
     background:
-        rgba(18,7,8,.9);
+        rgba(18,7,9,.9);
 
     border:
         1px solid
-        rgba(215,170,89,.3);
+        rgba(216,174,98,.3);
 
     padding:
         7px;
 
     border-radius:
-        8px;
+        9px;
 }
 
 .seat.current
-.seat-box {
+.seatBox {
 
     border-color:
         var(--gold2);
 
     box-shadow:
         0 0 20px
-        rgba(215,170,89,.4);
+        rgba(216,174,98,.45);
 }
 
-.seat-name {
+.seatName {
 
     font-size:
         10px;
+
+    font-weight:
+        800;
 }
 
-.seat-info {
+.seatInfo {
 
     font-size:
         8px;
 
     color:
-        #9d8675;
+        #9f8875;
+
+    margin-top:
+        2px;
 }
 
-.card-backs {
+.cardBacks {
 
     display:
         flex;
@@ -4330,7 +4225,7 @@ body:before {
         4px;
 }
 
-.card-back {
+.cardBack {
 
     width:
         17px;
@@ -4356,7 +4251,7 @@ body:before {
         );
 }
 
-.card-back:first-child {
+.cardBack:first-child {
 
     margin-left:
         0;
@@ -4384,9 +4279,12 @@ body:before {
 
     align-items:
         center;
+
+    max-width:
+        65%;
 }
 
-.play-group {
+.playGroup {
 
     display:
         flex;
@@ -4398,7 +4296,7 @@ body:before {
         center;
 }
 
-.play-name {
+.playName {
 
     font-size:
         8px;
@@ -4410,7 +4308,7 @@ body:before {
         #130809;
 
     padding:
-        3px 6px;
+        3px 7px;
 
     border-radius:
         20px;
@@ -4423,10 +4321,10 @@ body:before {
 .card {
 
     width:
-        60px;
+        62px;
 
     height:
-        88px;
+        90px;
 
     border-radius:
         8px;
@@ -4444,7 +4342,7 @@ body:before {
         space-between;
 
     font-weight:
-        700;
+        800;
 
     box-shadow:
         0 7px 17px
@@ -4526,7 +4424,7 @@ body:before {
         #9b5666;
 }
 
-.card-center {
+.cardCenter {
 
     text-align:
         center;
@@ -4535,14 +4433,14 @@ body:before {
         28px;
 }
 
-.card-bottom {
+.cardBottom {
 
     transform:
         rotate(180deg);
 }
 
 /* =========================================================
-   CARD ANIMATION
+   ANIMATION
 ========================================================= */
 
 @keyframes fly {
@@ -4576,7 +4474,7 @@ body:before {
     }
 }
 
-.play-group
+.playGroup
 .card {
 
     animation:
@@ -4590,7 +4488,7 @@ body:before {
         );
 }
 
-.play-group.winner
+.playGroup.winner
 .card {
 
     box-shadow:
@@ -4603,7 +4501,7 @@ body:before {
 }
 
 /* =========================================================
-   PLAYER HAND
+   HAND
 ========================================================= */
 
 .hand {
@@ -4671,7 +4569,7 @@ body:before {
         var(--gold2);
 }
 
-.play-btn {
+.playBtn {
 
     margin-top:
         10px;
@@ -4692,10 +4590,10 @@ body:before {
         );
 
     font-weight:
-        700;
+        800;
 }
 
-.play-btn:disabled {
+.playBtn:disabled {
 
     background:
         #41363a;
@@ -4711,7 +4609,7 @@ body:before {
 .score {
 
     width:
-        min(860px,96vw);
+        min(900px,96vw);
 
     margin:
         15px auto;
@@ -4730,7 +4628,7 @@ body:before {
         hidden;
 }
 
-.score-head {
+.scoreHead {
 
     padding:
         12px;
@@ -4738,22 +4636,22 @@ body:before {
     color:
         var(--gold2);
 
-    font-size:
-        13px;
+    font-weight:
+        800;
 
     border-bottom:
         1px solid
         var(--line);
 }
 
-.score-row {
+.scoreRow {
 
     display:
         grid;
 
     grid-template-columns:
         60px
-        1.3fr
+        1.4fr
         1fr
         1fr;
 
@@ -4761,7 +4659,7 @@ body:before {
         center;
 
     min-height:
-        46px;
+        48px;
 
     border-bottom:
         1px solid
@@ -4771,7 +4669,7 @@ body:before {
         10px;
 }
 
-.score-row > div {
+.scoreRow > div {
 
     text-align:
         center;
@@ -4780,10 +4678,127 @@ body:before {
         7px;
 }
 
-.score-row.first {
+.scoreRow.first {
 
     background:
-        rgba(215,170,89,.08);
+        rgba(216,174,98,.08);
+}
+
+/* =========================================================
+   TESTER PANEL
+========================================================= */
+
+.testerPanel {
+
+    width:
+        min(900px,96vw);
+
+    margin:
+        12px auto;
+
+    padding:
+        10px;
+
+    border:
+        1px solid
+        rgba(168,105,220,.35);
+
+    background:
+        rgba(92,35,126,.12);
+
+    border-radius:
+        8px;
+
+    display:
+        none;
+}
+
+.testerPanel.show {
+
+    display:
+        block;
+}
+
+.testerPanel h3 {
+
+    margin:
+        0 0 7px;
+
+    color:
+        #d9b7f2;
+
+    font-size:
+        12px;
+}
+
+.testerCards {
+
+    display:
+        grid;
+
+    grid-template-columns:
+        repeat(3,1fr);
+
+    gap:
+        8px;
+}
+
+.testerHand {
+
+    background:
+        #120b14;
+
+    border:
+        1px solid
+        rgba(255,255,255,.07);
+
+    border-radius:
+        6px;
+
+    padding:
+        8px;
+}
+
+.testerHand b {
+
+    font-size:
+        10px;
+
+    color:
+        #d8c6df;
+}
+
+.miniCards {
+
+    display:
+        flex;
+
+    gap:
+        3px;
+
+    flex-wrap:
+        wrap;
+
+    margin-top:
+        5px;
+}
+
+.miniCard {
+
+    font-size:
+        10px;
+
+    background:
+        #f3eee7;
+
+    color:
+        #17100e;
+
+    border-radius:
+        3px;
+
+    padding:
+        2px 4px;
 }
 
 /* =========================================================
@@ -4794,19 +4809,13 @@ body:before {
     max-width:900px
 ) {
 
-    .hero-row {
+    .heroRow {
 
         grid-template-columns:
             1fr;
     }
 
-    .register-card {
-
-        margin-top:
-            0;
-    }
-
-    .content-grid {
+    .lobbyGrid {
 
         grid-template-columns:
             1fr 1fr;
@@ -4821,16 +4830,10 @@ body:before {
             auto;
     }
 
-    .top {
+    .topbar {
 
         flex-wrap:
             wrap;
-
-        height:
-            auto;
-
-        padding:
-            10px 0;
     }
 
     .search {
@@ -4839,16 +4842,16 @@ body:before {
             0;
     }
 
-    .hero {
+    .testerCards {
 
-        height:
-            230px;
+        grid-template-columns:
+            1fr 1fr;
     }
 
-    .table-board {
+    .tableBoard {
 
         height:
-            460px;
+            470px;
     }
 }
 
@@ -4856,37 +4859,31 @@ body:before {
     max-width:560px
 ) {
 
-    .content-grid {
+    .lobbyGrid {
 
         grid-template-columns:
             1fr;
     }
 
-    .hero-copy {
+    .heroCopy {
 
         left:
-            22px;
+            20px;
 
         top:
-            45px;
+            40px;
 
         width:
-            70%;
+            72%;
     }
 
-    .hero-copy h1 {
+    .heroCopy h1 {
 
         font-size:
-            21px;
+            22px;
     }
 
-    .search input {
-
-        width:
-            160px;
-    }
-
-    .table-board {
+    .tableBoard {
 
         height:
             410px;
@@ -4898,13 +4895,13 @@ body:before {
     .card {
 
         width:
-            46px;
+            47px;
 
         height:
-            68px;
+            69px;
     }
 
-    .card-center {
+    .cardCenter {
 
         font-size:
             20px;
@@ -4913,16 +4910,28 @@ body:before {
     .seat {
 
         width:
-            90px;
+            92px;
     }
 
-    .score-row {
+    .scoreRow {
 
         grid-template-columns:
             45px
             1.2fr
             .8fr
             .8fr;
+    }
+
+    .testerCards {
+
+        grid-template-columns:
+            1fr;
+    }
+
+    .search input {
+
+        width:
+            155px;
     }
 }
 
@@ -4932,21 +4941,23 @@ body:before {
 
 <body>
 
+<!-- ======================================================
+     LOBBY
+======================================================= -->
+
 <div id="lobby">
 
 <div class="shell">
 
-    <!-- TOP -->
-
-    <div class="top">
+    <div class="topbar">
 
         <div class="brand">
 
             WRITTEN
 
-            <span>
+            <b>
                 BURA
-            </span>
+            </b>
 
         </div>
 
@@ -4954,54 +4965,68 @@ body:before {
 
             <input
                 id="searchInput"
-                placeholder="SEARCH"
-                oninput="renderLobbyTables()"
+                placeholder="SEARCH TABLES"
+                oninput="renderLobby()"
             >
 
         </div>
 
-        <select
-            id="languageSelect"
-            class="top-link"
-            onchange="changeLanguage()"
+        <button
+            class="topbtn"
+            onclick="openModal('rulesModal')"
         >
-
-            <option value="ka">
-                ქართული
-            </option>
-
-            <option value="en">
-                English
-            </option>
-
-        </select>
+            RULES
+        </button>
 
         <button
-            class="top-link"
+            class="topbtn"
+            onclick="openModal('tournamentsModal')"
+        >
+            TOURNAMENTS
+        </button>
+
+        <button
+            class="topbtn"
+            onclick="openProfile()"
+        >
+            PROFILE
+        </button>
+
+        <button
+            class="topbtn"
             onclick="openModal('supportModal')"
         >
             SUPPORT
         </button>
 
         <button
-            class="top-btn"
+            class="topbtn"
             onclick="openModal('loginModal')"
         >
             LOGIN
         </button>
 
         <button
-            class="top-btn gold"
+            class="topbtn gold"
             onclick="focusRegister()"
         >
             REGISTRATION
         </button>
 
+        <div
+            id="userPill"
+            class="userPill"
+        ></div>
+
     </div>
 
-    <!-- NAV -->
-
     <div class="subnav">
+
+        <button
+            onclick="scrollToTables()"
+        >
+            POPULAR TABLES
+        </button>
 
         <button
             onclick="openModal('rulesModal')"
@@ -5021,31 +5046,32 @@ body:before {
             MY PROFILE
         </button>
 
-        <button
-            onclick="scrollToTables()"
-        >
-            TABLES
-        </button>
-
     </div>
 
-    <!-- HERO -->
-
-    <div class="hero-row">
+    <div class="heroRow">
 
         <div class="hero">
 
-            <div class="hero-copy">
+            <div class="heroCopy">
 
                 <h1>
+
                     WRITTEN BURA'S
+
                     <br>
+
                     EXCLUSIVE TABLES
+
                 </h1>
 
                 <p>
-                    კლასიკური ბურა თანამედროვე ონლაინ მაგიდებზე.
-                    აირჩიე ფსონი, მაგიდის ზომა და დაიწყე თამაში.
+
+                    აირჩიე 3 ან 4 კაციანი მაგიდა,
+                    ფსონი და პარტიების რაოდენობა.
+
+                    TEST MODE-ში saba123-ით
+                    თამაში მაშინვე დაიწყება ბოტებთან.
+
                 </p>
 
                 <button
@@ -5056,63 +5082,41 @@ body:before {
 
             </div>
 
-            <div class="dots">
-
-                <i></i>
-
-                <i class="active"></i>
-
-                <i></i>
-
-            </div>
-
         </div>
 
         <!-- REGISTER -->
 
         <div
-            class="register-card"
+            class="regCard"
             id="registerCard"
         >
 
-            <div class="register-title">
+            <h3>
 
                 REGISTRATION:
 
                 <b>
-                    BECOME A MEMBER OF WRITTEN BURA
+                    BECOME A MEMBER
                 </b>
 
-            </div>
+            </h3>
 
-            <div class="reg-field">
+            <input
+                id="regEmail"
+                type="email"
+                placeholder="Email"
+            >
 
-                <input
-                    id="regEmail"
-                    type="email"
-                    placeholder="Email"
-                >
+            <input
+                id="regUsername"
+                placeholder="Username"
+            >
 
-            </div>
-
-            <div class="reg-field">
-
-                <input
-                    id="regUsername"
-                    placeholder="Username"
-                >
-
-            </div>
-
-            <div class="reg-field">
-
-                <input
-                    id="regPassword"
-                    type="password"
-                    placeholder="Password"
-                >
-
-            </div>
+            <input
+                id="regPassword"
+                type="password"
+                placeholder="Password"
+            >
 
             <label class="terms">
 
@@ -5134,36 +5138,23 @@ body:before {
 
             <div
                 id="regMessage"
-                style="
-                    font-size:9px;
-                    margin-top:7px;
-                "
+                class="msg"
             ></div>
-
-            <div class="ribbon">
-
-                Ready for a truly royal and great
-                <br>
-                Bura duel!
-
-            </div>
 
         </div>
 
     </div>
 
-    <!-- TABLES -->
-
     <h2
-        class="section-title"
         id="tablesSection"
+        class="sectionTitle"
     >
         POPULAR TABLES
     </h2>
 
     <div
-        class="content-grid"
-        id="contentGrid"
+        id="lobbyGrid"
+        class="lobbyGrid"
     ></div>
 
 </div>
@@ -5176,13 +5167,13 @@ body:before {
 
 <div id="game">
 
-    <div class="game-top">
+    <div class="gameTop">
 
-        <div class="game-brand">
+        <div class="gameBrand">
             WRITTEN BURA
         </div>
 
-        <div class="game-info">
+        <div class="gameStats">
 
             <div class="stat">
 
@@ -5236,14 +5227,39 @@ body:before {
 
         </div>
 
+        <button
+            class="topbtn"
+            onclick="location.reload()"
+        >
+            EXIT
+        </button>
+
     </div>
 
     <div
-        class="status"
         id="status"
+        class="status"
     ></div>
 
-    <div class="table-board">
+    <!-- TEST MODE -->
+
+    <div
+        id="testerPanel"
+        class="testerPanel"
+    >
+
+        <h3>
+            🧪 TEST MODE — ყველა მოთამაშის კარტი
+        </h3>
+
+        <div
+            id="testerCards"
+            class="testerCards"
+        ></div>
+
+    </div>
+
+    <div class="tableBoard">
 
         <div id="players"></div>
 
@@ -5257,7 +5273,7 @@ body:before {
 
         <button
             id="playBtn"
-            class="play-btn"
+            class="playBtn"
             disabled
             onclick="playSelected()"
         >
@@ -5268,7 +5284,7 @@ body:before {
 
     <div class="score">
 
-        <div class="score-head">
+        <div class="scoreHead">
             🏆 LIVE STANDINGS
         </div>
 
@@ -5279,24 +5295,24 @@ body:before {
 </div>
 
 <!-- ======================================================
-     LOGIN MODAL
+     LOGIN
 ======================================================= -->
 
 <div
-    class="modal"
     id="loginModal"
+    class="modal"
 >
 
-    <div class="modal-box">
+    <div class="modalBox">
 
-        <div class="modal-head">
+        <div class="modalHead">
 
             <h2>
                 LOGIN
             </h2>
 
             <button
-                class="close"
+                class="closeBtn"
                 onclick="closeModal('loginModal')"
             >
                 ×
@@ -5304,7 +5320,7 @@ body:before {
 
         </div>
 
-        <div class="login-form">
+        <div class="loginForm">
 
             <input
                 id="loginUsername"
@@ -5325,22 +5341,20 @@ body:before {
 
             <div
                 id="loginMessage"
-                style="
-                    font-size:10px;
-                    margin-top:8px;
-                "
+                class="msg"
             ></div>
 
             <p>
 
-                TEST MODE:
-                username
+                🧪 TEST MODE:
+
+                Username
 
                 <b>
                     saba123
                 </b>
 
-                , password არ არის საჭირო.
+                , პაროლი არ სჭირდება.
 
             </p>
 
@@ -5350,23 +5364,25 @@ body:before {
 
 </div>
 
-<!-- RULES -->
+<!-- ======================================================
+     RULES
+======================================================= -->
 
 <div
-    class="modal"
     id="rulesModal"
+    class="modal"
 >
 
-    <div class="modal-box">
+    <div class="modalBox">
 
-        <div class="modal-head">
+        <div class="modalHead">
 
             <h2>
                 BURA RULES
             </h2>
 
             <button
-                class="close"
+                class="closeBtn"
                 onclick="closeModal('rulesModal')"
             >
                 ×
@@ -5375,8 +5391,10 @@ body:before {
         </div>
 
         <p>
-            თამაში მიმდინარეობს 36-კარტიანი დასტით:
+
+            36 კარტი:
             6, 7, 8, 9, J, Q, K, 10, A.
+
         </p>
 
         <ul>
@@ -5402,19 +5420,23 @@ body:before {
             </li>
 
             <li>
-                პირველი მოთამაშე ჩამოდის ერთი ცვეტის კარტებით.
+                პირველი მოთამაშე ერთი ცვეტის კარტებით ჩამოდის.
             </li>
 
             <li>
-                კოზირი სცემს უკოზირო ცვეტს.
+                კოზირი სცემს უკოზიროს.
             </li>
 
             <li>
-                5 ერთი ცვეტის კარტი ითვლება მალიუტკად.
+                5 ერთი ცვეტის კარტი მალიუტკაა.
             </li>
 
             <li>
-                საერთო ქულა ახლდება სრული ხელის დასრულების შემდეგ.
+                საერთო ქულა ემატება სრული ხელის დასრულების შემდეგ.
+            </li>
+
+            <li>
+                0 ქულა მიმდინარე სატესტო წესით -120-ად ითვლება.
             </li>
 
         </ul>
@@ -5423,23 +5445,25 @@ body:before {
 
 </div>
 
-<!-- TOURNAMENTS -->
+<!-- ======================================================
+     TOURNAMENTS
+======================================================= -->
 
 <div
-    class="modal"
     id="tournamentsModal"
+    class="modal"
 >
 
-    <div class="modal-box">
+    <div class="modalBox">
 
-        <div class="modal-head">
+        <div class="modalHead">
 
             <h2>
                 TOURNAMENTS
             </h2>
 
             <button
-                class="close"
+                class="closeBtn"
                 onclick="closeModal('tournamentsModal')"
             >
                 ×
@@ -5453,23 +5477,25 @@ body:before {
 
 </div>
 
-<!-- PROFILE -->
+<!-- ======================================================
+     PROFILE
+======================================================= -->
 
 <div
-    class="modal"
     id="profileModal"
+    class="modal"
 >
 
-    <div class="modal-box">
+    <div class="modalBox">
 
-        <div class="modal-head">
+        <div class="modalHead">
 
             <h2>
                 MY PROFILE
             </h2>
 
             <button
-                class="close"
+                class="closeBtn"
                 onclick="closeModal('profileModal')"
             >
                 ×
@@ -5483,23 +5509,25 @@ body:before {
 
 </div>
 
-<!-- SUPPORT -->
+<!-- ======================================================
+     SUPPORT
+======================================================= -->
 
 <div
-    class="modal"
     id="supportModal"
+    class="modal"
 >
 
-    <div class="modal-box">
+    <div class="modalBox">
 
-        <div class="modal-head">
+        <div class="modalHead">
 
             <h2>
                 SUPPORT
             </h2>
 
             <button
-                class="close"
+                class="closeBtn"
                 onclick="closeModal('supportModal')"
             >
                 ×
@@ -5508,15 +5536,18 @@ body:before {
         </div>
 
         <p>
-            დახმარება: თამაშის წესები, ანგარიში,
-            მაგიდაზე შესვლა ან ტექნიკური პრობლემა.
+
+            თუ დაგჭირდება დახმარება თამაშის წესებში,
+            ანგარიშში ან მაგიდაზე შესვლაში,
+            გახსენი ქვედა ჩატი.
+
         </p>
 
         <button
-            class="top-btn gold"
+            class="topbtn gold"
             onclick="
-                toggleChat();
                 closeModal('supportModal');
+                toggleChat();
             "
         >
             OPEN CHAT
@@ -5526,32 +5557,34 @@ body:before {
 
 </div>
 
-<!-- CHAT -->
+<!-- ======================================================
+     CHAT
+======================================================= -->
 
 <div class="chat">
 
     <button
-        class="chat-btn"
+        class="chatBtn"
         onclick="toggleChat()"
     >
         💬
     </button>
 
     <div
-        class="chat-box"
         id="chatBox"
+        class="chatBox"
     >
 
         <div
-            class="chat-log"
             id="chatLog"
+            class="chatLog"
         >
             Support:
             მოგესალმებით WRITTEN BURA-ში.
             როგორ დაგეხმაროთ?
         </div>
 
-        <div class="chat-send">
+        <div class="chatSend">
 
             <input
                 id="chatInput"
@@ -5572,6 +5605,10 @@ body:before {
 
 <script>
 
+/* =========================================================
+   CLIENT STATE
+========================================================= */
+
 const socket =
     io();
 
@@ -5583,18 +5620,21 @@ let token =
 let username =
     localStorage.getItem(
         'bura_username'
-    );
+    ) ||
+    '';
 
 let email =
     localStorage.getItem(
         'bura_email'
-    ) || '';
+    ) ||
+    '';
 
 let balance =
     Number(
         localStorage.getItem(
             'bura_balance'
-        ) || 0
+        ) ||
+        0
     );
 
 let isTester =
@@ -5605,11 +5645,14 @@ let isTester =
 
 let lobbyState = {
 
-    tables: [],
+    tables:
+        [],
 
-    feed: [],
+    feed:
+        [],
 
-    tournaments: [],
+    tournaments:
+        [],
 
     online:
         0
@@ -5657,12 +5700,6 @@ function focusRegister() {
 
     document
         .getElementById(
-            'regEmail'
-        )
-        .focus();
-
-    document
-        .getElementById(
             'registerCard'
         )
         .scrollIntoView({
@@ -5673,6 +5710,12 @@ function focusRegister() {
             block:
                 'center'
         });
+
+    document
+        .getElementById(
+            'regEmail'
+        )
+        .focus();
 }
 
 function scrollToTables() {
@@ -5689,42 +5732,7 @@ function scrollToTables() {
 }
 
 /* =========================================================
-   LANGUAGE
-========================================================= */
-
-function changeLanguage() {
-
-    const value =
-        document
-            .getElementById(
-                'languageSelect'
-            )
-            .value;
-
-    document
-        .documentElement
-        .lang =
-            value;
-
-    if (
-        value ===
-        'en'
-    ) {
-
-        alert(
-            'Language switched to English. Full translation can be added next.'
-        );
-
-    } else {
-
-        alert(
-            'ენა შეიცვალა ქართულზე.'
-        );
-    }
-}
-
-/* =========================================================
-   REGISTER
+   REGISTER CLIENT
 ========================================================= */
 
 async function registerUser() {
@@ -5815,7 +5823,9 @@ async function registerUser() {
         );
 
         message.textContent =
-            '✓ Registration successful. Balance $1,000';
+            '✓ რეგისტრაცია დასრულდა. ბალანსი $1,000';
+
+        updateUserPill();
 
     } catch (
         error
@@ -5827,12 +5837,12 @@ async function registerUser() {
 }
 
 /* =========================================================
-   LOGIN
+   LOGIN CLIENT
 ========================================================= */
 
 async function loginUser() {
 
-    const user =
+    const loginUsername =
         document
             .getElementById(
                 'loginUsername'
@@ -5876,7 +5886,7 @@ async function loginUser() {
                         JSON.stringify({
 
                             username:
-                                user,
+                                loginUsername,
 
                             password
                         })
@@ -5906,19 +5916,21 @@ async function loginUser() {
         message.textContent =
             data.isTester
                 ?
-                '🧪 TEST MODE active'
+                '🧪 TEST MODE აქტიურია'
                 :
                 '✓ Login successful';
 
+        updateUserPill();
+
         setTimeout(
-            () => {
+            function() {
 
                 closeModal(
                     'loginModal'
                 );
 
             },
-            500
+            400
         );
 
     } catch (
@@ -5983,6 +5995,92 @@ function saveLogin(
     );
 }
 
+function logoutUser() {
+
+    [
+        'bura_token',
+        'bura_username',
+        'bura_email',
+        'bura_balance',
+        'bura_tester'
+
+    ].forEach(
+        function(
+            key
+        ) {
+
+            localStorage
+                .removeItem(
+                    key
+                );
+        }
+    );
+
+    token =
+        '';
+
+    username =
+        '';
+
+    email =
+        '';
+
+    balance =
+        0;
+
+    isTester =
+        false;
+
+    updateUserPill();
+
+    closeModal(
+        'profileModal'
+    );
+}
+
+function updateUserPill() {
+
+    const pill =
+        document
+            .getElementById(
+                'userPill'
+            );
+
+    if (
+        token
+        &&
+        username
+    ) {
+
+        pill.textContent =
+            username
+            +
+            (
+                isTester
+                    ?
+                    ' · TEST'
+                    :
+                    ' · $' +
+                    balance
+            );
+
+        pill.classList
+            .add(
+                'show'
+            );
+
+    } else {
+
+        pill.textContent =
+            '';
+
+        pill.classList
+            .remove(
+                'show'
+            );
+    }
+}
+
 /* =========================================================
    PROFILE
 ========================================================= */
@@ -6002,7 +6100,7 @@ function openProfile() {
         content.innerHTML =
             '<p>ანგარიშში შესული არ ხარ.</p>'
             +
-            '<button class="top-btn gold" '
+            '<button class="topbtn gold" '
             +
             'onclick="closeModal(\\'profileModal\\');openModal(\\'loginModal\\')">'
             +
@@ -6013,30 +6111,30 @@ function openProfile() {
     } else {
 
         content.innerHTML =
-            '<p><b>Username:</b> '
+            '<div class="profileStat"><b>Username:</b> '
             +
             escapeHtml(
                 username
             )
             +
-            '</p>'
+            '</div>'
             +
-            '<p><b>Email:</b> '
+            '<div class="profileStat"><b>Email:</b> '
             +
             escapeHtml(
                 email ||
                 '-'
             )
             +
-            '</p>'
+            '</div>'
             +
-            '<p><b>Balance:</b> $'
+            '<div class="profileStat"><b>Balance:</b> $'
             +
             balance
             +
-            '</p>'
+            '</div>'
             +
-            '<p><b>Mode:</b> '
+            '<div class="profileStat"><b>Mode:</b> '
             +
             (
                 isTester
@@ -6046,7 +6144,17 @@ function openProfile() {
                     'PLAYER'
             )
             +
-            '</p>';
+            '</div>'
+            +
+            '<div style="margin-top:12px">'
+            +
+            '<button class="topbtn" onclick="logoutUser()">'
+            +
+            'LOGOUT'
+            +
+            '</button>'
+            +
+            '</div>';
     }
 
     openModal(
@@ -6060,28 +6168,30 @@ function openProfile() {
 
 socket.on(
     'lobbyUpdate',
-    state => {
+    function(
+        state
+    ) {
 
         lobbyState =
             state ||
             lobbyState;
 
-        renderLobbyTables();
+        renderLobby();
 
         renderTournaments();
     }
 );
 
 /* =========================================================
-   TABLES
+   RENDER LOBBY
 ========================================================= */
 
-function renderLobbyTables() {
+function renderLobby() {
 
     const grid =
         document
             .getElementById(
-                'contentGrid'
+                'lobbyGrid'
             );
 
     const query =
@@ -6101,7 +6211,9 @@ function renderLobbyTables() {
             []
         )
         .filter(
-            table => {
+            function(
+                table
+            ) {
 
                 return (
                     !query
@@ -6114,13 +6226,15 @@ function renderLobbyTables() {
                     ||
                     String(
                         table.stake
-                    ).includes(
+                    )
+                    .includes(
                         query
                     )
                     ||
                     String(
                         table.capacity
-                    ).includes(
+                    )
+                    .includes(
                         query
                     )
                 );
@@ -6136,58 +6250,124 @@ function renderLobbyTables() {
             3
         )
         .forEach(
-            table => {
+            function(
+                table
+            ) {
 
                 html +=
-                    '<div class="table-card">'
+
+                    '<div class="tableCard">'
+
                     +
-                    '<div class="table-visual"></div>'
+
+                    '<div class="tableVisual"></div>'
+
                     +
-                    '<div class="table-body">'
+
+                    '<div class="tableBody">'
+
                     +
-                    '<div class="table-title">'
+
+                    '<div class="tableTitle">'
+
                     +
+
                     escapeHtml(
                         table.label
                     )
+
                     +
+
                     '</div>'
+
                     +
-                    '<div class="table-meta">'
+
+                    '<div class="tableMeta">'
+
                     +
-                    'Pot: $'
+
+                    'Stake: $'
+
                     +
+
                     table.stake
+
                     +
+
                     '<br>'
+
                     +
+
                     table.capacity
+
                     +
+
                     ' players · waiting '
+
                     +
+
                     table.waiting
+
                     +
+
                     '</div>'
+
                     +
-                    '<button class="join" onclick="quickJoin('
+
+                    '<button class="joinBtn" onclick="openJoin('
+
                     +
+
                     table.stake
+
                     +
+
                     ','
+
                     +
+
                     table.capacity
+
                     +
+
                     ')">'
+
                     +
+
                     'JOIN'
+
                     +
+
                     '</button>'
+
                     +
+
                     '</div>'
+
                     +
+
                     '</div>';
             }
         );
+
+    html +=
+
+        '<div class="feedCard">'
+
+        +
+
+        '<h3>LIVE FEED · ONLINE '
+
+        +
+
+        (
+            lobbyState.online ||
+            0
+        )
+
+        +
+
+        '</h3>';
 
     const feed =
         (
@@ -6199,25 +6379,27 @@ function renderLobbyTables() {
             5
         );
 
-    html +=
-        '<div class="live-card">'
-        +
-        '<h3>LIVE FEED</h3>';
-
     if (
         feed.length
     ) {
 
         feed.forEach(
-            item => {
+            function(
+                item
+            ) {
 
                 html +=
-                    '<div class="feed-item">'
+
+                    '<div class="feedItem">'
+
                     +
+
                     escapeHtml(
                         item.text
                     )
+
                     +
+
                     '</div>';
             }
         );
@@ -6225,10 +6407,15 @@ function renderLobbyTables() {
     } else {
 
         html +=
-            '<div class="feed-item">'
+
+            '<div class="feedItem">'
+
             +
+
             'No live activity yet.'
+
             +
+
             '</div>';
     }
 
@@ -6251,13 +6438,6 @@ function renderTournaments() {
                 'tournamentsContent'
             );
 
-    if (
-        !content
-    ) {
-
-        return;
-    }
-
     let html =
         '';
 
@@ -6266,59 +6446,68 @@ function renderTournaments() {
         []
     )
     .forEach(
-        tournament => {
+        function(
+            tournament
+        ) {
 
             html +=
-                '<div class="t-item">'
+
+                '<div class="profileStat">'
+
                 +
-                '<div>'
-                +
+
                 '<b>'
+
                 +
+
                 escapeHtml(
                     tournament.name
                 )
+
                 +
+
                 '</b>'
+
                 +
+
                 '<br>'
+
                 +
-                '<span>'
-                +
+
                 tournament.date
+
                 +
+
                 ' · '
+
                 +
+
                 tournament.players
+
                 +
-                ' players'
+
+                ' players · Prize $'
+
                 +
-                '</span>'
-                +
-                '</div>'
-                +
-                '<div>'
-                +
-                'Prize $'
-                +
+
                 tournament.prize
+
                 +
-                '</div>'
-                +
+
                 '</div>';
         }
     );
 
     content.innerHTML =
         html ||
-        '<p>No tournaments scheduled.</p>';
+        '<p>No tournaments.</p>';
 }
 
 /* =========================================================
-   JOIN
+   JOIN TABLE
 ========================================================= */
 
-function quickJoin(
+function openJoin(
     stake,
     capacity
 ) {
@@ -6334,28 +6523,53 @@ function quickJoin(
         return;
     }
 
+    const parties =
+        prompt(
+            'რამდენი პარტია? 1-4',
+            '1'
+        );
+
+    if (
+        parties ===
+        null
+    ) {
+
+        return;
+    }
+
     socket.emit(
         'joinTable',
         {
 
-            token,
+            token:
+                token,
 
-            stake,
+            stake:
+                stake,
 
-            capacity,
+            capacity:
+                capacity,
 
             parties:
-                1
+                Number(
+                    parties
+                )
         }
     );
 }
 
+/* =========================================================
+   SOCKET EVENTS
+========================================================= */
+
 socket.on(
     'waitingForPlayers',
-    data => {
+    function(
+        data
+    ) {
 
         alert(
-            'Waiting for players: '
+            'ველოდებით მოთამაშეებს: '
             +
             data.current
             +
@@ -6368,7 +6582,9 @@ socket.on(
 
 socket.on(
     'errorMessage',
-    message => {
+    function(
+        message
+    ) {
 
         alert(
             message
@@ -6392,7 +6608,7 @@ socket.on(
 
 socket.on(
     'playerLeft',
-    () => {
+    function() {
 
         const status =
             document
@@ -6410,13 +6626,11 @@ socket.on(
     }
 );
 
-/* =========================================================
-   GAME STATE
-========================================================= */
-
 socket.on(
     'gameStateUpdate',
-    state => {
+    function(
+        state
+    ) {
 
         if (
             !state
@@ -6452,6 +6666,10 @@ socket.on(
         );
     }
 );
+
+/* =========================================================
+   GAME RENDER
+========================================================= */
 
 function renderGame(
     state
@@ -6520,13 +6738,17 @@ function renderGame(
         state
     );
 
+    renderTesterPanel(
+        state
+    );
+
     updateStatus(
         state
     );
 }
 
 /* =========================================================
-   PLAYER POSITIONS
+   POSITIONS
 ========================================================= */
 
 function seatPosition(
@@ -6538,9 +6760,15 @@ function seatPosition(
 
     let myIndex =
         players.findIndex(
-            player =>
-                player.id ===
-                myId
+            function(
+                player
+            ) {
+
+                return (
+                    player.id ===
+                    myId
+                );
+            }
         );
 
     if (
@@ -6561,9 +6789,10 @@ function seatPosition(
         %
         count;
 
-    const three = [
+    const positions3 = [
 
         {
+
             left:
                 50,
 
@@ -6572,6 +6801,7 @@ function seatPosition(
         },
 
         {
+
             left:
                 20,
 
@@ -6580,6 +6810,7 @@ function seatPosition(
         },
 
         {
+
             left:
                 80,
 
@@ -6588,9 +6819,10 @@ function seatPosition(
         }
     ];
 
-    const four = [
+    const positions4 = [
 
         {
+
             left:
                 50,
 
@@ -6599,6 +6831,7 @@ function seatPosition(
         },
 
         {
+
             left:
                 11,
 
@@ -6607,6 +6840,7 @@ function seatPosition(
         },
 
         {
+
             left:
                 50,
 
@@ -6615,6 +6849,7 @@ function seatPosition(
         },
 
         {
+
             left:
                 89,
 
@@ -6627,9 +6862,9 @@ function seatPosition(
         count ===
         4
             ?
-            four
+            positions4
             :
-            three
+            positions3
     )[
         relative
     ];
@@ -6654,10 +6889,10 @@ function renderPlayers(
 
     state.players
         .forEach(
-            (
+            function(
                 player,
                 index
-            ) => {
+            ) {
 
                 const seat =
                     document
@@ -6713,19 +6948,26 @@ function renderPlayers(
                     ) {
 
                         backs +=
-                            '<div class="card-back"></div>';
+                            '<div class="cardBack"></div>';
                     }
                 }
 
                 seat.innerHTML =
-                    '<div class="seat-box">'
+
+                    '<div class="seatBox">'
+
                     +
-                    '<div class="seat-name">'
+
+                    '<div class="seatName">'
+
                     +
+
                     escapeHtml(
                         player.name
                     )
+
                     +
+
                     (
                         player.isBot
                             ?
@@ -6733,31 +6975,57 @@ function renderPlayers(
                             :
                             ''
                     )
+
                     +
+
                     '</div>'
+
                     +
-                    '<div class="seat-info">'
+
+                    '<div class="seatInfo">'
+
                     +
+
                     'cards '
+
                     +
+
                     player.cardCount
+
                     +
+
                     ' · hand '
+
                     +
+
                     player.handPoints
+
                     +
+
                     ' · total '
+
                     +
+
                     player.totalPoints
+
                     +
+
                     '</div>'
+
                     +
-                    '<div class="card-backs">'
+
+                    '<div class="cardBacks">'
+
                     +
+
                     backs
+
                     +
+
                     '</div>'
+
                     +
+
                     '</div>';
 
                 container.appendChild(
@@ -6786,7 +7054,9 @@ function renderTableCards(
 
     state.table
         .forEach(
-            play => {
+            function(
+                play
+            ) {
 
                 const group =
                     document
@@ -6795,7 +7065,7 @@ function renderTableCards(
                         );
 
                 group.className =
-                    'play-group'
+                    'playGroup'
                     +
                     (
                         play.isWinning
@@ -6812,7 +7082,7 @@ function renderTableCards(
                         );
 
                 name.className =
-                    'play-name';
+                    'playName';
 
                 name.textContent =
                     play.playerName;
@@ -6823,7 +7093,9 @@ function renderTableCards(
 
                 play.cards
                     .forEach(
-                        card => {
+                        function(
+                            card
+                        ) {
 
                             group.appendChild(
                                 createCard(
@@ -6864,10 +7136,10 @@ function renderMyCards(
         [];
 
     cards.forEach(
-        (
+        function(
             card,
             index
-        ) => {
+        ) {
 
             const element =
                 createCard(
@@ -6875,7 +7147,7 @@ function renderMyCards(
                 );
 
             element.onclick =
-                () => {
+                function() {
 
                     toggleCard(
                         index,
@@ -6894,6 +7166,10 @@ function renderMyCards(
     );
 }
 
+/* =========================================================
+   CARD
+========================================================= */
+
 function createCard(
     card
 ) {
@@ -6909,40 +7185,65 @@ function createCard(
         +
         card.suit;
 
-    const suit =
+    const symbol =
         suitSymbol(
             card.suit
         );
 
     element.innerHTML =
+
         '<div>'
+
         +
+
         escapeHtml(
             card.rank
         )
+
         +
+
         ' '
+
         +
-        suit
+
+        symbol
+
         +
+
         '</div>'
+
         +
-        '<div class="card-center">'
+
+        '<div class="cardCenter">'
+
         +
-        suit
+
+        symbol
+
         +
+
         '</div>'
+
         +
-        '<div class="card-bottom">'
+
+        '<div class="cardBottom">'
+
         +
+
         escapeHtml(
             card.rank
         )
+
         +
+
         ' '
+
         +
-        suit
+
+        symbol
+
         +
+
         '</div>';
 
     return element;
@@ -7150,39 +7451,54 @@ function renderScore(
         state.players
             .slice()
             .sort(
-                (
+                function(
                     a,
                     b
-                ) =>
-                    (
-                        b.totalPoints ||
-                        0
-                    )
-                    -
-                    (
-                        a.totalPoints ||
-                        0
-                    )
+                ) {
+
+                    return (
+                        (
+                            b.totalPoints ||
+                            0
+                        )
+                        -
+                        (
+                            a.totalPoints ||
+                            0
+                        )
+                    );
+                }
             );
 
     let html =
-        '<div class="score-row">'
+
+        '<div class="scoreRow">'
+
         +
+
         '<div>#</div>'
+
         +
+
         '<div>PLAYER</div>'
+
         +
+
         '<div>LAST HAND</div>'
+
         +
+
         '<div>TOTAL</div>'
+
         +
+
         '</div>';
 
     players.forEach(
-        (
+        function(
             player,
             index
-        ) => {
+        ) {
 
             const medal =
                 index ===
@@ -7202,8 +7518,7 @@ function renderScore(
                                     ?
                                     '🥉'
                                     :
-                                    '#'
-                                    +
+                                    '#' +
                                     (
                                         index +
                                         1
@@ -7224,8 +7539,11 @@ function renderScore(
                     '-';
 
             html +=
-                '<div class="score-row '
+
+                '<div class="scoreRow '
+
                 +
+
                 (
                     index ===
                     0
@@ -7234,21 +7552,35 @@ function renderScore(
                         :
                         ''
                 )
+
                 +
+
                 '">'
+
                 +
+
                 '<div>'
+
                 +
+
                 medal
+
                 +
+
                 '</div>'
+
                 +
+
                 '<div>'
+
                 +
+
                 escapeHtml(
                     player.name
                 )
+
                 +
+
                 (
                     player.id ===
                     state.viewingPlayerId
@@ -7257,21 +7589,156 @@ function renderScore(
                         :
                         ''
                 )
+
                 +
+
                 '</div>'
+
                 +
+
                 '<div>'
+
                 +
+
                 lastScore
+
                 +
+
                 '</div>'
+
                 +
+
                 '<div><b>'
+
                 +
+
                 player.totalPoints
+
                 +
+
                 '</b></div>'
+
                 +
+
+                '</div>';
+        }
+    );
+
+    container.innerHTML =
+        html;
+}
+
+/* =========================================================
+   TESTER VIEW
+========================================================= */
+
+function renderTesterPanel(
+    state
+) {
+
+    const panel =
+        document
+            .getElementById(
+                'testerPanel'
+            );
+
+    const container =
+        document
+            .getElementById(
+                'testerCards'
+            );
+
+    if (
+        !isTester
+        ||
+        !state.testerRevealAll
+    ) {
+
+        panel.classList
+            .remove(
+                'show'
+            );
+
+        container.innerHTML =
+            '';
+
+        return;
+    }
+
+    panel.classList
+        .add(
+            'show'
+        );
+
+    let html =
+        '';
+
+    state.players.forEach(
+        function(
+            player
+        ) {
+
+            const cards =
+                state.playersCards[
+                    player.id
+                ] ||
+                [];
+
+            html +=
+
+                '<div class="testerHand">'
+
+                +
+
+                '<b>'
+
+                +
+
+                escapeHtml(
+                    player.name
+                )
+
+                +
+
+                '</b>'
+
+                +
+
+                '<div class="miniCards">';
+
+            cards.forEach(
+                function(
+                    card
+                ) {
+
+                    html +=
+
+                        '<span class="miniCard">'
+
+                        +
+
+                        escapeHtml(
+                            card.rank
+                        )
+
+                        +
+
+                        suitSymbol(
+                            card.suit
+                        )
+
+                        +
+
+                        '</span>';
+                }
+            );
+
+            html +=
+
+                '</div>'
+
+                +
+
                 '</div>';
         }
     );
@@ -7399,19 +7866,18 @@ function sendChat() {
             );
 
     log.innerHTML +=
-        '<br><br>'
+
+        '<br><br>You: '
+
         +
-        'You: '
-        +
+
         escapeHtml(
             value
         )
+
         +
-        '<br>'
-        +
-        'Support: შეტყობინება მიღებულია. '
-        +
-        'სატესტო ჩატში პასუხი ავტომატურია.';
+
+        '<br>Support: შეტყობინება მიღებულია. სატესტო ჩატი ავტომატურია.';
 
     log.scrollTop =
         log.scrollHeight;
@@ -7420,7 +7886,13 @@ function sendChat() {
         '';
 }
 
-renderLobbyTables();
+/* =========================================================
+   INIT
+========================================================= */
+
+updateUserPill();
+
+renderLobby();
 
 </script>
 
@@ -7459,14 +7931,13 @@ server.listen(
     () => {
 
         console.log(
-            'WRITTEN BURA started on port',
+            'WRITTEN BURA running on port',
             PORT
         );
 
         console.log(
             'Deck:',
-            createDeck().length,
-            'cards'
+            createDeck().length
         );
 
         console.log(
