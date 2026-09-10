@@ -9,74 +9,86 @@ const io = new Server(server);
 const PORT = process.env.PORT || 10000;
 const TESTER_NAME = 'saba123';
 const START_BALANCE = 1000;
-
+const TURN_SECONDS = 20;
 const CAPACITIES = [3, 4];
 const STAKES = [5, 10, 25, 50, 100];
 const MAX_PARTIES = 4;
 
 const CARD_VALUES = {
-    '6': 0,
-    '7': 0,
-    '8': 0,
-    '9': 0,
-    J: 2,
-    Q: 3,
-    K: 4,
-    '10': 10,
-    A: 11
+  '6': 0,
+  '7': 0,
+  '8': 0,
+  '9': 0,
+  'J': 2,
+  'Q': 3,
+  'K': 4,
+  '10': 10,
+  'A': 11
 };
 
 const RANKS = [
-    '6',
-    '7',
-    '8',
-    '9',
-    'J',
-    'Q',
-    'K',
-    '10',
-    'A'
+  '6',
+  '7',
+  '8',
+  '9',
+  'J',
+  'Q',
+  'K',
+  '10',
+  'A'
 ];
 
 const SUITS = [
-    'spades',
-    'clubs',
-    'diamonds',
-    'hearts'
+  'spades',
+  'clubs',
+  'diamonds',
+  'hearts'
 ];
 
 const TRUMPS = [
-    'spades',
-    'clubs',
-    'diamonds',
-    'hearts',
-    'no_trump'
+  'spades',
+  'clubs',
+  'diamonds',
+  'hearts',
+  'no_trump'
 ];
 
 const rooms = new Map();
 
-/* =========================================================
-   HELPERS
-========================================================= */
-
-function cleanName(value) {
-    return String(value || '')
-        .trim()
-        .slice(0, 20);
+function cleanName(v) {
+  return String(v || '')
+    .trim()
+    .slice(0, 20);
 }
 
-function isTesterName(value) {
-    return cleanName(value).toLowerCase() === TESTER_NAME;
+function isTesterName(v) {
+  return (
+    cleanName(v).toLowerCase() ===
+    TESTER_NAME
+  );
 }
 
 function makeId(prefix) {
-    return (
-        prefix +
-        '_' +
-        Date.now() +
-        '_' +
-        Math.floor(Math.random() * 1000000)
-    );
+  return (
+    prefix +
+    '_' +
+    Date.now() +
+    '_' +
+    Math.floor(
+      Math.random() * 1000000
+    )
+  );
+}
+
+function rankIndex(card) {
+  return RANKS.indexOf(card.rank);
+}
+
+function isTrump(card, trump) {
+  return (
+    trump !== 'no_trump' &&
+    card.suit === trump
+  );
 }
 
 /* =========================================================
@@ -84,30 +96,37 @@ function makeId(prefix) {
 ========================================================= */
 
 function createDeck() {
-    const deck = [];
+  const deck = [];
 
-    for (const suit of SUITS) {
-        for (const rank of RANKS) {
-            deck.push({
-                suit,
-                rank,
-                value: CARD_VALUES[rank]
-            });
-        }
+  for (const suit of SUITS) {
+    for (const rank of RANKS) {
+      deck.push({
+        suit,
+        rank,
+        value: CARD_VALUES[rank]
+      });
     }
+  }
 
-    for (let i = deck.length - 1; i > 0; i--) {
-        const j = Math.floor(
-            Math.random() * (i + 1)
-        );
+  for (
+    let i = deck.length - 1;
+    i > 0;
+    i--
+  ) {
+    const j = Math.floor(
+      Math.random() * (i + 1)
+    );
 
-        [deck[i], deck[j]] = [
-            deck[j],
-            deck[i]
-        ];
-    }
+    [
+      deck[i],
+      deck[j]
+    ] = [
+      deck[j],
+      deck[i]
+    ];
+  }
 
-    return deck;
+  return deck;
 }
 
 /* =========================================================
@@ -115,25 +134,26 @@ function createDeck() {
 ========================================================= */
 
 function createRoom(
+  capacity,
+  parties,
+  stake
+) {
+  const room = {
+    id: makeId('room'),
     capacity,
     parties,
-    stake
-) {
-    const room = {
-        id: makeId('room'),
-        capacity,
-        parties,
-        stake,
-        players: [],
-        game: null
-    };
+    stake,
+    players: [],
+    game: null,
+    timer: null
+  };
 
-    rooms.set(
-        room.id,
-        room
-    );
+  rooms.set(
+    room.id,
+    room
+  );
 
-    return room;
+  return room;
 }
 
 /* =========================================================
@@ -141,267 +161,241 @@ function createRoom(
 ========================================================= */
 
 function startHand(
-    room,
-    previous = null
+  room,
+  previous = null
 ) {
-    const deck = createDeck();
+  const deck =
+    createDeck();
 
-    const hands = {};
-    const taken = {};
-    const totals = {};
+  const hands = {};
+  const taken = {};
+  const totals = {};
 
-    for (const player of room.players) {
-        hands[player.id] =
-            deck.splice(
-                0,
-                5
-            );
+  for (
+    const player of room.players
+  ) {
+    hands[player.id] =
+      deck.splice(0, 5);
 
-        taken[player.id] = [];
+    taken[player.id] = [];
 
-        totals[player.id] =
-            previous
-                ? (
-                    previous.totals[player.id] ||
-                    0
-                )
-                : 0;
-    }
-
-    const handIndex =
-        previous
-            ? previous.handIndex + 1
-            : 1;
-
-    const leaderIndex =
-        (
-            previous &&
-            Number.isInteger(
-                previous.nextLeaderIndex
-            )
+    totals[player.id] =
+      previous
+        ? (
+          previous.totals[
+            player.id
+          ] || 0
         )
-            ? previous.nextLeaderIndex
-            : 0;
+        : 0;
+  }
 
-    return {
-        deck,
-        hands,
-        taken,
-        totals,
+  const handIndex =
+    previous
+      ? previous.handIndex + 1
+      : 1;
 
-        table: [],
+  const leaderIndex =
+    (
+      previous &&
+      Number.isInteger(
+        previous.nextLeaderIndex
+      )
+    )
+      ? previous.nextLeaderIndex
+      : 0;
 
-        handIndex,
+  return {
+    deck,
+    hands,
+    taken,
+    totals,
 
-        partyIndex:
-            Math.ceil(
-                handIndex / 5
-            ),
+    table: [],
 
-        trump:
-            TRUMPS[
-                (
-                    handIndex - 1
-                ) %
-                TRUMPS.length
-            ],
+    handIndex,
 
-        currentTurnIndex:
-            leaderIndex,
+    partyIndex:
+      Math.ceil(
+        handIndex / 5
+      ),
 
-        nextLeaderIndex:
-            leaderIndex,
+    trump:
+      TRUMPS[
+        (
+          handIndex - 1
+        ) %
+        TRUMPS.length
+      ],
 
-        leadCount:
-            null,
+    currentTurnIndex:
+      leaderIndex,
 
-        processing:
-            false,
+    nextLeaderIndex:
+      leaderIndex,
 
-        gameOver:
-            false,
+    leadCount:
+      null,
 
-        lastHandScores:
-            previous
-                ? (
-                    previous.lastHandScores ||
-                    {}
-                )
-                : {},
+    processing:
+      false,
 
-        history:
-            previous
-                ? previous.history
-                : []
-    };
+    gameOver:
+      false,
+
+    lastHandScores:
+      previous
+        ? (
+          previous.lastHandScores ||
+          {}
+        )
+        : {},
+
+    history:
+      previous
+        ? previous.history
+        : [],
+
+    turnEndsAt:
+      Date.now() +
+      TURN_SECONDS * 1000
+  };
 }
 
 /* =========================================================
    CARD RULES
 ========================================================= */
 
-function rankIndex(card) {
-    return RANKS.indexOf(
-        card.rank
-    );
-}
-
-function isTrump(
-    card,
-    trump
-) {
-    return (
-        trump !== 'no_trump' &&
-        card.suit === trump
-    );
-}
-
 function cardBeats(
-    lead,
-    challenge,
-    trump
+  lead,
+  challenge,
+  trump
 ) {
-    const leadTrump =
-        isTrump(
-            lead,
-            trump
-        );
-
-    const challengeTrump =
-        isTrump(
-            challenge,
-            trump
-        );
-
-    if (
-        challengeTrump &&
-        !leadTrump
-    ) {
-        return true;
-    }
-
-    if (
-        !challengeTrump &&
-        leadTrump
-    ) {
-        return false;
-    }
-
-    if (
-        lead.suit !==
-        challenge.suit
-    ) {
-        return false;
-    }
-
-    return (
-        rankIndex(
-            challenge
-        )
-        >
-        rankIndex(
-            lead
-        )
+  const leadTrump =
+    isTrump(
+      lead,
+      trump
     );
+
+  const challengeTrump =
+    isTrump(
+      challenge,
+      trump
+    );
+
+  if (
+    challengeTrump &&
+    !leadTrump
+  ) {
+    return true;
+  }
+
+  if (
+    !challengeTrump &&
+    leadTrump
+  ) {
+    return false;
+  }
+
+  if (
+    lead.suit !==
+    challenge.suit
+  ) {
+    return false;
+  }
+
+  return (
+    rankIndex(
+      challenge
+    ) >
+    rankIndex(
+      lead
+    )
+  );
 }
 
-function isMaliutka(cards) {
-    return (
-        cards.length === 5 &&
-        cards.every(
-            card =>
-                card.suit ===
-                cards[0].suit
-        )
-    );
-}
+/* =========================================================
+   PLAY COMPARISON
+========================================================= */
 
 function playBeats(
-    leadPlay,
-    challengePlay,
-    trump
+  leadPlay,
+  challengePlay,
+  trump
 ) {
+  if (
+    leadPlay.cards.length !==
+    challengePlay.cards.length
+  ) {
+    return false;
+  }
+
+  const leadCards =
+    leadPlay.cards
+      .slice()
+      .sort(
+        (a, b) =>
+          rankIndex(b) -
+          rankIndex(a)
+      );
+
+  const challengeCards =
+    challengePlay.cards
+      .slice()
+      .sort(
+        (a, b) =>
+          rankIndex(b) -
+          rankIndex(a)
+      );
+
+  for (
+    let i = 0;
+    i < leadCards.length;
+    i++
+  ) {
     if (
-        isMaliutka(
-            challengePlay.cards
-        )
-        &&
-        leadPlay.cards.length <
-        5
+      !cardBeats(
+        leadCards[i],
+        challengeCards[i],
+        trump
+      )
     ) {
-        return true;
+      return false;
     }
+  }
 
-    if (
-        leadPlay.cards.length !==
-        challengePlay.cards.length
-    ) {
-        return false;
-    }
-
-    const leadCards =
-        leadPlay.cards
-            .slice()
-            .sort(
-                (a, b) =>
-                    rankIndex(b) -
-                    rankIndex(a)
-            );
-
-    const challengeCards =
-        challengePlay.cards
-            .slice()
-            .sort(
-                (a, b) =>
-                    rankIndex(b) -
-                    rankIndex(a)
-            );
-
-    for (
-        let i = 0;
-        i < leadCards.length;
-        i++
-    ) {
-        if (
-            !cardBeats(
-                leadCards[i],
-                challengeCards[i],
-                trump
-            )
-        ) {
-            return false;
-        }
-    }
-
-    return true;
+  return true;
 }
 
+/* =========================================================
+   WINNING PLAY
+========================================================= */
+
 function winningPlayIndex(game) {
+  if (
+    !game.table.length
+  ) {
+    return -1;
+  }
+
+  let winner = 0;
+
+  for (
+    let i = 1;
+    i < game.table.length;
+    i++
+  ) {
     if (
-        !game.table.length
+      playBeats(
+        game.table[winner],
+        game.table[i],
+        game.trump
+      )
     ) {
-        return -1;
+      winner = i;
     }
+  }
 
-    let winner = 0;
-
-    for (
-        let i = 1;
-        i < game.table.length;
-        i++
-    ) {
-        if (
-            playBeats(
-                game.table[winner],
-                game.table[i],
-                game.trump
-            )
-        ) {
-            winner = i;
-        }
-    }
-
-    return winner;
+  return winner;
 }
 
 /* =========================================================
@@ -409,170 +403,176 @@ function winningPlayIndex(game) {
 ========================================================= */
 
 function clientState(
-    room,
-    viewerId,
-    revealAll = false
+  room,
+  viewerId,
+  revealAll = false
 ) {
-    const game = room.game;
+  const game =
+    room.game;
 
-    if (
-        !game
+  if (
+    !game
+  ) {
+    return null;
+  }
+
+  const visible = {};
+
+  /*
+    TEST MODE:
+    saba123 ხედავს
+    ყველა მოთამაშის კარტს.
+  */
+
+  if (
+    revealAll
+  ) {
+    for (
+      const player of
+      room.players
     ) {
-        return null;
+      visible[player.id] =
+        game.hands[player.id] ||
+        [];
     }
+  } else if (
+    viewerId &&
+    game.hands[viewerId]
+  ) {
+    visible[viewerId] =
+      game.hands[viewerId];
+  }
 
-    const winnerIndex =
-        winningPlayIndex(
-            game
-        );
+  const winIdx =
+    winningPlayIndex(
+      game
+    );
 
-    const visible = {};
+  return {
+    roomId:
+      room.id,
 
-    /*
-        TEST MODE:
-        saba123 ხედავს
-        ყველა მოთამაშის კარტს
-    */
+    stake:
+      room.stake,
 
-    if (
-        revealAll
-    ) {
-        for (
-            const player of
-            room.players
-        ) {
-            visible[player.id] =
-                game.hands[player.id] ||
-                [];
-        }
-    } else if (
-        viewerId &&
-        game.hands[viewerId]
-    ) {
-        visible[viewerId] =
-            game.hands[viewerId];
-    }
+    capacity:
+      room.capacity,
 
-    return {
-        roomId:
-            room.id,
+    parties:
+      room.parties,
 
-        stake:
-            room.stake,
+    totalHands:
+      room.parties * 5,
 
-        capacity:
-            room.capacity,
+    handIndex:
+      game.handIndex,
 
-        parties:
-            room.parties,
+    partyIndex:
+      game.partyIndex,
 
-        totalHands:
-            room.parties * 5,
+    trump:
+      game.trump,
 
-        handIndex:
-            game.handIndex,
+    deckCount:
+      game.deck.length,
 
-        partyIndex:
-            game.partyIndex,
+    currentTurnIndex:
+      game.currentTurnIndex,
 
-        trump:
-            game.trump,
+    processing:
+      game.processing,
 
-        deckCount:
-            game.deck.length,
+    gameOver:
+      game.gameOver,
 
-        currentTurnIndex:
-            game.currentTurnIndex,
+    viewingPlayerId:
+      viewerId,
 
-        processing:
-            game.processing,
+    revealAll:
+      !!revealAll,
 
-        gameOver:
-            game.gameOver,
+    lastHandScores:
+      game.lastHandScores,
 
-        viewingPlayerId:
-            viewerId,
+    playersCards:
+      visible,
 
-        revealAll:
-            !!revealAll,
+    turnEndsAt:
+      game.turnEndsAt,
 
-        lastHandScores:
-            game.lastHandScores,
+    turnSeconds:
+      TURN_SECONDS,
 
-        playersCards:
-            visible,
+    table:
+      game.table.map(
+        (
+          play,
+          index
+        ) => ({
+          ...play,
 
-        table:
-            game.table.map(
-                (
-                    play,
-                    index
-                ) => ({
-                    ...play,
+          isWinning:
+            index ===
+            winIdx
+        })
+      ),
 
-                    isWinning:
-                        index ===
-                        winnerIndex
-                })
+    players:
+      room.players.map(
+        (
+          player,
+          index
+        ) => ({
+          id:
+            player.id,
+
+          name:
+            player.name,
+
+          isBot:
+            !!player.isBot,
+
+          isTester:
+            !!player.isTester,
+
+          balance:
+            player.balance,
+
+          cardCount:
+            (
+              game.hands[
+                player.id
+              ] ||
+              []
+            ).length,
+
+          handPoints:
+            (
+              game.taken[
+                player.id
+              ] ||
+              []
+            ).reduce(
+              (
+                sum,
+                card
+              ) =>
+                sum +
+                card.value,
+              0
             ),
 
-        players:
-            room.players.map(
-                (
-                    player,
-                    index
-                ) => ({
-                    id:
-                        player.id,
+          totalPoints:
+            game.totals[
+              player.id
+            ] || 0,
 
-                    name:
-                        player.name,
-
-                    isBot:
-                        player.isBot,
-
-                    isTester:
-                        player.isTester,
-
-                    balance:
-                        player.balance,
-
-                    cardCount:
-                        (
-                            game.hands[
-                                player.id
-                            ] ||
-                            []
-                        ).length,
-
-                    handPoints:
-                        (
-                            game.taken[
-                                player.id
-                            ] ||
-                            []
-                        ).reduce(
-                            (
-                                sum,
-                                card
-                            ) =>
-                                sum +
-                                card.value,
-                            0
-                        ),
-
-                    totalPoints:
-                        game.totals[
-                            player.id
-                        ] ||
-                        0,
-
-                    isCurrent:
-                        index ===
-                        game.currentTurnIndex
-                })
-            )
-    };
+          isCurrent:
+            index ===
+            game.currentTurnIndex
+        })
+      )
+  };
 }
 
 /* =========================================================
@@ -580,27 +580,65 @@ function clientState(
 ========================================================= */
 
 function broadcast(room) {
-    for (
-        const player of
-        room.players
+  for (
+    const player of
+    room.players
+  ) {
+    if (
+      player.isBot
     ) {
-        if (
-            player.isBot
-        ) {
-            continue;
-        }
-
-        io.to(
-            player.id
-        ).emit(
-            'gameStateUpdate',
-            clientState(
-                room,
-                player.id,
-                player.isTester
-            )
-        );
+      continue;
     }
+
+    io.to(
+      player.id
+    ).emit(
+      'gameStateUpdate',
+      clientState(
+        room,
+        player.id,
+        player.isTester
+      )
+    );
+  }
+}
+
+/* =========================================================
+   TURN TIMER
+========================================================= */
+
+function setTurn(
+  room,
+  index
+) {
+  if (
+    !room.game ||
+    room.game.gameOver
+  ) {
+    return;
+  }
+
+  room.game.currentTurnIndex =
+    index;
+
+  room.game.turnEndsAt =
+    Date.now() +
+    TURN_SECONDS * 1000;
+
+  clearTimeout(
+    room.timer
+  );
+
+  room.timer =
+    setTimeout(
+      () =>
+        autoPlayCurrent(
+          room
+        ),
+      TURN_SECONDS *
+        1000 +
+        100
+    );
 }
 
 /* =========================================================
@@ -608,57 +646,57 @@ function broadcast(room) {
 ========================================================= */
 
 function refill(
-    room,
-    winnerIndex
+  room,
+  winnerIndex
 ) {
-    const game =
-        room.game;
+  const game =
+    room.game;
 
-    while (
-        game.deck.length
+  while (
+    game.deck.length
+  ) {
+    let dealt =
+      false;
+
+    for (
+      let step = 0;
+      step <
+      room.players.length;
+      step++
     ) {
-        let dealt =
-            false;
+      const player =
+        room.players[
+          (
+            winnerIndex +
+            step
+          ) %
+          room.players.length
+        ];
 
-        for (
-            let step = 0;
-            step <
-            room.players.length;
-            step++
-        ) {
-            const player =
-                room.players[
-                    (
-                        winnerIndex +
-                        step
-                    ) %
-                    room.players.length
-                ];
+      const hand =
+        game.hands[
+          player.id
+        ];
 
-            const hand =
-                game.hands[
-                    player.id
-                ];
+      if (
+        hand.length < 5 &&
+        game.deck.length
+      ) {
+        hand.push(
+          game.deck.pop()
+        );
 
-            if (
-                hand.length < 5 &&
-                game.deck.length
-            ) {
-                hand.push(
-                    game.deck.pop()
-                );
-
-                dealt =
-                    true;
-            }
-        }
-
-        if (
-            !dealt
-        ) {
-            break;
-        }
+        dealt =
+          true;
+      }
     }
+
+    if (
+      !dealt
+    ) {
+      break;
+    }
+  }
 }
 
 /* =========================================================
@@ -666,146 +704,158 @@ function refill(
 ========================================================= */
 
 function finishHand(room) {
-    const game =
-        room.game;
+  const game =
+    room.game;
 
-    const scores = {};
+  const scores = {};
 
-    let minRaw =
-        Infinity;
+  let minRaw =
+    Infinity;
 
-    let minIndex =
-        0;
+  let minIndex =
+    0;
 
-    room.players.forEach(
+  room.players.forEach(
+    (
+      player,
+      index
+    ) => {
+      const raw =
         (
-            player,
-            index
-        ) => {
-            const raw =
-                (
-                    game.taken[
-                        player.id
-                    ] ||
-                    []
-                )
-                .reduce(
-                    (
-                        sum,
-                        card
-                    ) =>
-                        sum +
-                        card.value,
-                    0
-                );
-
-            /*
-                მიმდინარე სატესტო წესი:
-                0 ქულა = -120
-            */
-
-            const score =
-                raw === 0
-                    ? -120
-                    : raw;
-
-            scores[
-                player.id
-            ] =
-                score;
-
-            game.totals[
-                player.id
-            ] =
-                (
-                    game.totals[
-                        player.id
-                    ] ||
-                    0
-                )
-                +
-                score;
-
-            if (
-                raw <
-                minRaw
-            ) {
-                minRaw =
-                    raw;
-
-                minIndex =
-                    index;
-            }
-        }
-    );
-
-    game.lastHandScores =
-        {
-            ...scores
-        };
-
-    game.history.push({
-        hand:
-            game.handIndex,
-
-        scores:
-            {
-                ...scores
-            },
-
-        totals:
-            {
-                ...game.totals
-            }
-    });
-
-    /*
-        GAME OVER
-    */
-
-    if (
-        game.handIndex >=
-        room.parties * 5
-    ) {
-        game.gameOver =
-            true;
-
-        broadcast(
-            room
+          game.taken[
+            player.id
+          ] ||
+          []
+        ).reduce(
+          (
+            sum,
+            card
+          ) =>
+            sum +
+            card.value,
+          0
         );
 
-        return;
+      /*
+        მიმდინარე სატესტო წესი:
+        თუ მოთამაშემ 0 ქულა აიღო,
+        ანგარიშში -120 ემატება.
+      */
+
+      const score =
+        raw === 0
+          ? -120
+          : raw;
+
+      scores[
+        player.id
+      ] =
+        score;
+
+      game.totals[
+        player.id
+      ] =
+        (
+          game.totals[
+            player.id
+          ] ||
+          0
+        )
+        +
+        score;
+
+      if (
+        raw <
+        minRaw
+      ) {
+        minRaw =
+          raw;
+
+        minIndex =
+          index;
+      }
     }
+  );
 
-    /*
-        NEXT HAND
-    */
+  game.lastHandScores =
+    {
+      ...scores
+    };
 
-    game.nextLeaderIndex =
-        (
-            minIndex + 1
-        ) %
-        room.players.length;
+  game.history.push({
+    hand:
+      game.handIndex,
 
-    room.game =
-        startHand(
-            room,
-            game
-        );
+    scores:
+      {
+        ...scores
+      },
 
-    room.game
-        .lastHandScores =
-        {
-            ...scores
-        };
+    totals:
+      {
+        ...game.totals
+      }
+  });
+
+  if (
+    game.handIndex >=
+    room.parties * 5
+  ) {
+    game.gameOver =
+      true;
+
+    clearTimeout(
+      room.timer
+    );
 
     broadcast(
-        room
+      room
     );
 
-    scheduleBot(
-        room
+    io.to(
+      room.id
+    ).emit(
+      'sfxEvent',
+      {
+        type:
+          'win'
+      }
     );
+
+    return;
+  }
+
+  game.nextLeaderIndex =
+    (
+      minIndex + 1
+    ) %
+    room.players.length;
+
+  room.game =
+    startHand(
+      room,
+      game
+    );
+
+  room.game
+    .lastHandScores =
+    {
+      ...scores
+    };
+
+  setTurn(
+    room,
+    room.game
+      .currentTurnIndex
+  );
+
+  broadcast(
+    room
+  );
+
+  scheduleBot(
+    room
+  );
 }
 
 /* =========================================================
@@ -813,110 +863,436 @@ function finishHand(room) {
 ========================================================= */
 
 function completeTrick(room) {
-    const game =
-        room.game;
+  const game =
+    room.game;
 
-    const winnerPlayIndex =
-        winningPlayIndex(
-            game
+  const winnerIndexInTable =
+    winningPlayIndex(
+      game
+    );
+
+  const winnerPlay =
+    game.table[
+      winnerIndexInTable
+    ];
+
+  if (
+    !winnerPlay
+  ) {
+    return;
+  }
+
+  const allCards =
+    game.table.flatMap(
+      play =>
+        play.cards
+    );
+
+  game.taken[
+    winnerPlay.playerId
+  ].push(
+    ...allCards
+  );
+
+  const winnerIndex =
+    room.players
+      .findIndex(
+        player =>
+          player.id ===
+          winnerPlay.playerId
+      );
+
+  game.processing =
+    true;
+
+  clearTimeout(
+    room.timer
+  );
+
+  broadcast(
+    room
+  );
+
+  io.to(
+    room.id
+  ).emit(
+    'sfxEvent',
+    {
+      type:
+        'cut'
+    }
+  );
+
+  setTimeout(
+    () => {
+      if (
+        !rooms.has(
+          room.id
+        )
+        ||
+        room.game !==
+        game
+      ) {
+        return;
+      }
+
+      game.table =
+        [];
+
+      game.leadCount =
+        null;
+
+      refill(
+        room,
+        winnerIndex
+      );
+
+      game.processing =
+        false;
+
+      const allEmpty =
+        room.players.every(
+          player =>
+            (
+              game.hands[
+                player.id
+              ] ||
+              []
+            ).length ===
+            0
         );
 
-    const winnerPlay =
-        game.table[
-            winnerPlayIndex
-        ];
+      if (
+        allEmpty
+      ) {
+        finishHand(
+          room
+        );
+      } else {
+        setTurn(
+          room,
+          winnerIndex
+        );
+
+        broadcast(
+          room
+        );
+
+        scheduleBot(
+          room
+        );
+      }
+    },
+    850
+  );
+}
+
+/* =========================================================
+   SAME SUIT HELPERS
+========================================================= */
+
+function firstSameSuitGroup(
+  hand,
+  count
+) {
+  if (
+    count <= 1
+  ) {
+    return [0];
+  }
+
+  for (
+    const suit of
+    SUITS
+  ) {
+    const indexes = [];
+
+    hand.forEach(
+      (
+        card,
+        index
+      ) => {
+        if (
+          card.suit ===
+            suit
+          &&
+          indexes.length <
+            count
+        ) {
+          indexes.push(
+            index
+          );
+        }
+      }
+    );
 
     if (
-        !winnerPlay
+      indexes.length ===
+      count
     ) {
-        return;
+      return indexes;
+    }
+  }
+
+  return Array.from(
+    {
+      length:
+        Math.min(
+          count,
+          hand.length
+        )
+    },
+    (
+      _,
+      index
+    ) =>
+      index
+  );
+}
+
+function hasSameSuitGroup(
+  hand,
+  count
+) {
+  if (
+    count <= 1
+  ) {
+    return true;
+  }
+
+  return SUITS.some(
+    suit =>
+      hand.filter(
+        card =>
+          card.suit ===
+          suit
+      ).length >=
+      count
+  );
+}
+
+/* =========================================================
+   VALIDATE SELECTION
+========================================================= */
+
+function validateSelection(
+  game,
+  hand,
+  indexes
+) {
+  if (
+    !indexes.length
+  ) {
+    return {
+      ok: false,
+      message:
+        'აირჩიე მინიმუმ 1 კარტი.'
+    };
+  }
+
+  if (
+    indexes.length >
+    3
+  ) {
+    return {
+      ok: false,
+      message:
+        'ერთ სვლაზე მაქსიმუმ 3 კარტის არჩევა შეგიძლია.'
+    };
+  }
+
+  const cards =
+    indexes.map(
+      index =>
+        hand[index]
+    );
+
+  const sameSuit =
+    cards.every(
+      card =>
+        card.suit ===
+        cards[0].suit
+    );
+
+  /*
+    პირველი მოთამაშე:
+    1, 2 ან 3 კარტი.
+    თუ ერთზე მეტს ჩამოდის,
+    ყველა ერთი მასტის უნდა იყოს.
+  */
+
+  if (
+    !game.table.length
+  ) {
+    if (
+      !sameSuit
+    ) {
+      return {
+        ok: false,
+        message:
+          'პირველი ჩამოსვლისას არჩეული კარტები ერთი მასტის უნდა იყოს.'
+      };
+    }
+  } else {
+    /*
+      საპასუხო სვლა:
+      რაოდენობა ზუსტად უნდა დაემთხვეს
+      პირველ ჩამოსვლას.
+    */
+
+    const required =
+      game.leadCount ||
+      1;
+
+    if (
+      cards.length !==
+      required
+    ) {
+      return {
+        ok: false,
+        message:
+          'ჭრისას ზუსტად ' +
+          required +
+          ' კარტი უნდა ჩამოხვიდე.'
+      };
     }
 
-    const allCards =
-        game.table.flatMap(
-            play =>
-                play.cards
-        );
+    /*
+      თუ მოთამაშეს შეუძლია საჭირო რაოდენობის
+      ერთი მასტის კარტის შეკრება,
+      მაშინ სისტემა მოითხოვს ერთ მასტს.
 
-    game.taken[
-        winnerPlay.playerId
-    ].push(
-        ...allCards
+      თუ ვერ შეუძლია, ნებისმიერი შესაბამისი
+      რაოდენობის კარტით შეუძლია გაგრძელება,
+      რათა თამაში არ გაიჭედოს.
+    */
+
+    if (
+      hasSameSuitGroup(
+        hand,
+        required
+      )
+      &&
+      !sameSuit
+    ) {
+      return {
+        ok: false,
+        message:
+          'თუ შეგიძლია, საპასუხო კარტებიც ერთი მასტის უნდა იყოს.'
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    cards
+  };
+}
+
+/* =========================================================
+   APPLY PLAY
+========================================================= */
+
+function applyPlay(
+  room,
+  player,
+  indexes
+) {
+  const game =
+    room.game;
+
+  const hand =
+    game.hands[
+      player.id
+    ] ||
+    [];
+
+  const valid =
+    validateSelection(
+      game,
+      hand,
+      indexes
     );
 
-    const winnerIndex =
-        room.players.findIndex(
-            player =>
-                player.id ===
-                winnerPlay.playerId
-        );
+  if (
+    !valid.ok
+  ) {
+    return valid;
+  }
 
-    game.currentTurnIndex =
-        winnerIndex;
+  if (
+    !game.table.length
+  ) {
+    game.leadCount =
+      valid.cards.length;
+  }
 
-    game.processing =
-        true;
+  game.hands[
+    player.id
+  ] =
+    hand.filter(
+      (
+        _,
+        index
+      ) =>
+        !indexes.includes(
+          index
+        )
+    );
+
+  game.table.push({
+    playerId:
+      player.id,
+
+    playerName:
+      player.name,
+
+    cards:
+      valid.cards
+  });
+
+  io.to(
+    room.id
+  ).emit(
+    'sfxEvent',
+    {
+      type:
+        game.table.length >
+        1
+          ? 'cut'
+          : 'play'
+    }
+  );
+
+  if (
+    game.table.length ===
+    room.players.length
+  ) {
+    completeTrick(
+      room
+    );
+  } else {
+    setTurn(
+      room,
+      (
+        game.currentTurnIndex +
+        1
+      ) %
+      room.players.length
+    );
 
     broadcast(
-        room
+      room
     );
 
-    setTimeout(
-        () => {
-            if (
-                !rooms.has(
-                    room.id
-                )
-                ||
-                room.game !==
-                game
-            ) {
-                return;
-            }
-
-            game.table = [];
-
-            game.leadCount =
-                null;
-
-            refill(
-                room,
-                winnerIndex
-            );
-
-            game.processing =
-                false;
-
-            const allEmpty =
-                room.players.every(
-                    player =>
-                        (
-                            game.hands[
-                                player.id
-                            ] ||
-                            []
-                        ).length ===
-                        0
-                );
-
-            if (
-                allEmpty
-            ) {
-                finishHand(
-                    room
-                );
-            } else {
-                broadcast(
-                    room
-                );
-
-                scheduleBot(
-                    room
-                );
-            }
-        },
-        950
+    scheduleBot(
+      room
     );
+  }
+
+  return {
+    ok: true
+  };
 }
 
 /* =========================================================
@@ -924,200 +1300,210 @@ function completeTrick(room) {
 ========================================================= */
 
 function botChoice(
-    room,
-    bot
+  room,
+  bot
 ) {
-    const game =
-        room.game;
+  const game =
+    room.game;
 
-    const hand =
-        game.hands[
-            bot.id
-        ] ||
-        [];
+  const hand =
+    game.hands[
+      bot.id
+    ] ||
+    [];
 
-    if (
-        !hand.length
-    ) {
-        return [];
-    }
+  if (
+    !hand.length
+  ) {
+    return [];
+  }
 
-    if (
-        !game.table.length
-    ) {
-        return [0];
-    }
-
-    const required =
-        Math.min(
-            game.leadCount ||
-            1,
-            hand.length
-        );
-
-    return Array.from(
-        {
-            length:
-                required
-        },
-        (
-            _,
-            index
-        ) =>
-            index
+  if (
+    !game.table.length
+  ) {
+    return firstSameSuitGroup(
+      hand,
+      1
     );
+  }
+
+  return firstSameSuitGroup(
+    hand,
+    Math.min(
+      game.leadCount ||
+      1,
+      hand.length
+    )
+  );
 }
 
 function scheduleBot(room) {
-    if (
-        !room ||
-        !room.game ||
-        room.game.processing ||
-        room.game.gameOver
-    ) {
-        return;
-    }
+  if (
+    !room
+    ||
+    !room.game
+    ||
+    room.game.processing
+    ||
+    room.game.gameOver
+  ) {
+    return;
+  }
 
-    const player =
-        room.players[
-            room.game
-                .currentTurnIndex
-        ];
+  const player =
+    room.players[
+      room.game
+        .currentTurnIndex
+    ];
 
-    if (
-        !player ||
-        !player.isBot
-    ) {
-        return;
-    }
+  if (
+    !player
+    ||
+    !player.isBot
+  ) {
+    return;
+  }
 
-    setTimeout(
-        () => {
-            botTurn(
-                room,
-                player
-            );
-        },
-        650
-    );
+  setTimeout(
+    () => {
+      botTurn(
+        room,
+        player
+      );
+    },
+    550
+  );
 }
 
 function botTurn(
-    room,
-    bot
+  room,
+  bot
 ) {
-    if (
-        !rooms.has(
-            room.id
-        )
-        ||
-        !room.game
-    ) {
-        return;
+  if (
+    !rooms.has(
+      room.id
+    )
+    ||
+    !room.game
+    ||
+    room.game.processing
+    ||
+    room.game.gameOver
+  ) {
+    return;
+  }
+
+  const active =
+    room.players[
+      room.game
+        .currentTurnIndex
+    ];
+
+  if (
+    !active
+    ||
+    active.id !==
+      bot.id
+    ||
+    !active.isBot
+  ) {
+    return;
+  }
+
+  const indexes =
+    botChoice(
+      room,
+      bot
+    );
+
+  applyPlay(
+    room,
+    bot,
+    indexes
+  );
+}
+
+/* =========================================================
+   AUTO PLAY AFTER TIMER
+========================================================= */
+
+function autoPlayCurrent(room) {
+  if (
+    !rooms.has(
+      room.id
+    )
+    ||
+    !room.game
+    ||
+    room.game.processing
+    ||
+    room.game.gameOver
+  ) {
+    return;
+  }
+
+  const player =
+    room.players[
+      room.game
+        .currentTurnIndex
+    ];
+
+  if (
+    !player
+  ) {
+    return;
+  }
+
+  const hand =
+    room.game.hands[
+      player.id
+    ] ||
+    [];
+
+  if (
+    !hand.length
+  ) {
+    return;
+  }
+
+  const count =
+    room.game.table.length
+      ?
+      Math.min(
+        room.game.leadCount ||
+        1,
+        hand.length
+      )
+      :
+      1;
+
+  const indexes =
+    firstSameSuitGroup(
+      hand,
+      count
+    );
+
+  io.to(
+    room.id
+  ).emit(
+    'quickMessage',
+    {
+      playerId:
+        player.id,
+
+      playerName:
+        player.name,
+
+      text:
+        '⏱ ავტომატური სვლა'
     }
+  );
 
-    const game =
-        room.game;
-
-    if (
-        game.processing ||
-        game.gameOver
-    ) {
-        return;
-    }
-
-    const active =
-        room.players[
-            game.currentTurnIndex
-        ];
-
-    if (
-        !active ||
-        active.id !== bot.id ||
-        !active.isBot
-    ) {
-        return;
-    }
-
-    const hand =
-        game.hands[
-            bot.id
-        ] ||
-        [];
-
-    const indexes =
-        botChoice(
-            room,
-            bot
-        );
-
-    const cards =
-        indexes
-            .map(
-                index =>
-                    hand[index]
-            )
-            .filter(Boolean);
-
-    if (
-        !cards.length
-    ) {
-        return;
-    }
-
-    if (
-        !game.table.length
-    ) {
-        game.leadCount =
-            cards.length;
-    }
-
-    game.hands[
-        bot.id
-    ] =
-        hand.filter(
-            (
-                _,
-                index
-            ) =>
-                !indexes.includes(
-                    index
-                )
-        );
-
-    game.table.push({
-        playerId:
-            bot.id,
-
-        playerName:
-            bot.name,
-
-        cards
-    });
-
-    if (
-        game.table.length ===
-        room.players.length
-    ) {
-        completeTrick(
-            room
-        );
-    } else {
-        game.currentTurnIndex =
-            (
-                game.currentTurnIndex +
-                1
-            ) %
-            room.players.length;
-
-        broadcast(
-            room
-        );
-
-        scheduleBot(
-            room
-        );
-    }
+  applyPlay(
+    room,
+    player,
+    indexes
+  );
 }
 
 /* =========================================================
@@ -1125,481 +1511,492 @@ function botTurn(
 ========================================================= */
 
 io.on(
-    'connection',
-    socket => {
+  'connection',
+  socket => {
 
-        socket.on(
-            'joinTable',
-            data => {
+    /* =====================================================
+       JOIN TABLE
+    ===================================================== */
 
-                const name =
-                    cleanName(
-                        data &&
-                        data.name
-                    );
+    socket.on(
+      'joinTable',
+      data => {
+        const name =
+          cleanName(
+            data &&
+            data.name
+          );
 
-                if (
-                    !name
-                ) {
-                    return socket.emit(
-                        'errorMessage',
-                        'შეიყვანე მოთამაშის სახელი.'
-                    );
-                }
+        if (
+          !name
+        ) {
+          return socket.emit(
+            'errorMessage',
+            'შეიყვანე მოთამაშის სახელი.'
+          );
+        }
 
-                if (
-                    socket.roomId
-                ) {
-                    return socket.emit(
-                        'errorMessage',
-                        'უკვე მაგიდაზე ხარ.'
-                    );
-                }
+        if (
+          socket.roomId
+        ) {
+          return socket.emit(
+            'errorMessage',
+            'უკვე მაგიდაზე ხარ.'
+          );
+        }
 
-                let capacity =
-                    parseInt(
-                        data.capacity,
-                        10
-                    );
+        let capacity =
+          parseInt(
+            data.capacity,
+            10
+          );
 
-                if (
-                    !CAPACITIES.includes(
-                        capacity
-                    )
-                ) {
-                    capacity = 3;
-                }
+        if (
+          !CAPACITIES.includes(
+            capacity
+          )
+        ) {
+          capacity =
+            3;
+        }
 
-                let parties =
-                    parseInt(
-                        data.parties,
-                        10
-                    );
+        let parties =
+          parseInt(
+            data.parties,
+            10
+          );
 
-                if (
-                    !Number.isInteger(
-                        parties
-                    )
-                ) {
-                    parties = 1;
-                }
+        if (
+          !Number.isInteger(
+            parties
+          )
+        ) {
+          parties =
+            1;
+        }
 
-                parties =
-                    Math.max(
-                        1,
-                        Math.min(
-                            MAX_PARTIES,
-                            parties
-                        )
-                    );
+        parties =
+          Math.max(
+            1,
+            Math.min(
+              MAX_PARTIES,
+              parties
+            )
+          );
 
-                let stake =
-                    Number(
-                        data.stake
-                    );
+        let stake =
+          Number(
+            data.stake
+          );
 
-                if (
-                    !STAKES.includes(
-                        stake
-                    )
-                ) {
-                    stake = 5;
-                }
+        if (
+          !STAKES.includes(
+            stake
+          )
+        ) {
+          stake =
+            5;
+        }
 
-                const tester =
-                    isTesterName(
-                        name
-                    );
+        const tester =
+          isTesterName(
+            name
+          );
 
-                let room =
-                    Array.from(
-                        rooms.values()
-                    )
-                    .find(
-                        item =>
-                            !item.game
-                            &&
-                            item.capacity ===
-                            capacity
-                            &&
-                            item.parties ===
-                            parties
-                            &&
-                            item.stake ===
-                            stake
-                            &&
-                            item.players.length <
-                            item.capacity
-                    );
+        let room =
+          Array.from(
+            rooms.values()
+          )
+          .find(
+            currentRoom =>
+              !currentRoom.game
+              &&
+              currentRoom.capacity ===
+                capacity
+              &&
+              currentRoom.parties ===
+                parties
+              &&
+              currentRoom.stake ===
+                stake
+              &&
+              currentRoom.players.length <
+                currentRoom.capacity
+          );
 
-                if (
-                    !room
-                ) {
-                    room =
-                        createRoom(
-                            capacity,
-                            parties,
-                            stake
-                        );
-                }
+        if (
+          !room
+        ) {
+          room =
+            createRoom(
+              capacity,
+              parties,
+              stake
+            );
+        }
 
-                socket.roomId =
-                    room.id;
+        socket.roomId =
+          room.id;
 
-                socket.join(
-                    room.id
-                );
-
-                room.players.push({
-                    id:
-                        socket.id,
-
-                    name,
-
-                    isBot:
-                        false,
-
-                    isTester:
-                        tester,
-
-                    balance:
-                        START_BALANCE
-                });
-
-                /*
-                    TEST MODE:
-                    saba123 -> fill bots
-                */
-
-                if (
-                    tester
-                ) {
-                    let botNumber =
-                        1;
-
-                    while (
-                        room.players.length <
-                        room.capacity
-                    ) {
-                        const botId =
-                            makeId(
-                                'bot'
-                            );
-
-                        room.players.push({
-                            id:
-                                botId,
-
-                            name:
-                                'BOT ' +
-                                botNumber,
-
-                            isBot:
-                                true,
-
-                            isTester:
-                                false,
-
-                            balance:
-                                START_BALANCE
-                        });
-
-                        botNumber++;
-                    }
-                }
-
-                if (
-                    room.players.length ===
-                    room.capacity
-                ) {
-                    room.game =
-                        startHand(
-                            room,
-                            null
-                        );
-
-                    broadcast(
-                        room
-                    );
-
-                    scheduleBot(
-                        room
-                    );
-                } else {
-                    io.to(
-                        room.id
-                    ).emit(
-                        'waitingForPlayers',
-                        {
-                            current:
-                                room.players.length,
-
-                            max:
-                                room.capacity,
-
-                            stake:
-                                room.stake
-                        }
-                    );
-                }
-            }
+        socket.join(
+          room.id
         );
 
-        /* =================================================
-           PLAY CARDS
-        ================================================= */
+        room.players.push({
+          id:
+            socket.id,
 
-        socket.on(
-            'playCards',
-            data => {
+          name,
 
-                const room =
-                    socket.roomId
-                        ? rooms.get(
-                            socket.roomId
-                        )
-                        : null;
+          isBot:
+            false,
 
-                if (
-                    !room ||
-                    !room.game
-                ) {
-                    return;
-                }
+          isTester:
+            tester,
 
-                const game =
-                    room.game;
+          balance:
+            START_BALANCE
+        });
 
-                if (
-                    game.processing ||
-                    game.gameOver
-                ) {
-                    return;
-                }
+        /*
+          TEST MODE:
+          saba123-ის შესვლისას
+          ცარიელი ადგილები ბოტებით ივსება.
+        */
 
-                const active =
-                    room.players[
-                        game.currentTurnIndex
-                    ];
+        if (
+          tester
+        ) {
+          let botNumber =
+            1;
 
-                if (
-                    !active ||
-                    active.id !==
-                    socket.id
-                ) {
-                    return socket.emit(
-                        'errorMessage',
-                        'ახლა შენი სვლა არ არის.'
-                    );
-                }
+          while (
+            room.players.length <
+            room.capacity
+          ) {
+            room.players.push({
+              id:
+                makeId(
+                  'bot'
+                ),
 
-                const hand =
-                    game.hands[
-                        socket.id
-                    ] ||
-                    [];
+              name:
+                'BOT ' +
+                botNumber++,
 
-                let indexes =
-                    Array.isArray(
-                        data &&
-                        data.cardIndices
-                    )
-                        ? [
-                            ...new Set(
-                                data.cardIndices
-                            )
-                        ]
-                        : [];
+              isBot:
+                true,
 
-                indexes =
-                    indexes.filter(
-                        index =>
-                            Number.isInteger(
-                                index
-                            )
-                            &&
-                            index >= 0
-                            &&
-                            index <
-                            hand.length
-                    );
+              isTester:
+                false,
 
-                if (
-                    !indexes.length
-                ) {
-                    return socket.emit(
-                        'errorMessage',
-                        'აირჩიე კარტი.'
-                    );
-                }
+              balance:
+                START_BALANCE
+            });
+          }
+        }
 
-                const cards =
-                    indexes.map(
-                        index =>
-                            hand[
-                                index
-                            ]
-                    );
+        /*
+          START GAME
+        */
 
-                /*
-                    FIRST PLAY
-                */
+        if (
+          room.players.length ===
+          room.capacity
+        ) {
+          room.game =
+            startHand(
+              room
+            );
 
-                if (
-                    !game.table.length
-                ) {
-                    const sameSuit =
-                        cards.every(
-                            card =>
-                                card.suit ===
-                                cards[
-                                    0
-                                ].suit
-                        );
+          setTurn(
+            room,
+            room.game
+              .currentTurnIndex
+          );
 
-                    if (
-                        !sameSuit
-                    ) {
-                        return socket.emit(
-                            'errorMessage',
-                            'პირველი ჩამოსვლა ერთი ცვეტის კარტებით უნდა იყოს.'
-                        );
-                    }
+          broadcast(
+            room
+          );
 
-                    game.leadCount =
-                        cards.length;
-                } else {
-                    const required =
-                        Math.min(
-                            game.leadCount ||
-                            1,
-                            hand.length
-                        );
-
-                    if (
-                        !isMaliutka(
-                            cards
-                        )
-                        &&
-                        cards.length !==
-                        required
-                    ) {
-                        return socket.emit(
-                            'errorMessage',
-                            'უნდა ჩამოხვიდე ' +
-                            required +
-                            ' კარტი ან მალიუტკა.'
-                        );
-                    }
-                }
-
-                game.hands[
-                    socket.id
-                ] =
-                    hand.filter(
-                        (
-                            _,
-                            index
-                        ) =>
-                            !indexes.includes(
-                                index
-                            )
-                    );
-
-                game.table.push({
-                    playerId:
-                        socket.id,
-
-                    playerName:
-                        active.name,
-
-                    cards
-                });
-
-                if (
-                    game.table.length ===
-                    room.players.length
-                ) {
-                    completeTrick(
-                        room
-                    );
-                } else {
-                    game.currentTurnIndex =
-                        (
-                            game.currentTurnIndex +
-                            1
-                        ) %
-                        room.players.length;
-
-                    broadcast(
-                        room
-                    );
-
-                    scheduleBot(
-                        room
-                    );
-                }
+          io.to(
+            room.id
+          ).emit(
+            'sfxEvent',
+            {
+              type:
+                'deal'
             }
-        );
+          );
 
-        socket.on(
-            'disconnect',
-            () => {
+          scheduleBot(
+            room
+          );
+        } else {
+          io.to(
+            room.id
+          ).emit(
+            'waitingForPlayers',
+            {
+              current:
+                room.players.length,
 
-                const room =
-                    socket.roomId
-                        ? rooms.get(
-                            socket.roomId
-                        )
-                        : null;
+              max:
+                room.capacity,
 
-                if (
-                    !room
-                ) {
-                    return;
-                }
-
-                room.players =
-                    room.players.filter(
-                        player =>
-                            player.id !==
-                            socket.id
-                    );
-
-                const humans =
-                    room.players.filter(
-                        player =>
-                            !player.isBot
-                    );
-
-                if (
-                    humans.length ===
-                    0
-                ) {
-                    rooms.delete(
-                        room.id
-                    );
-                } else {
-                    io.to(
-                        room.id
-                    ).emit(
-                        'errorMessage',
-                        'ერთ-ერთმა მოთამაშემ დატოვა მაგიდა.'
-                    );
-                }
+              stake:
+                room.stake
             }
+          );
+        }
+      }
+    );
+
+    /* =====================================================
+       PLAY CARDS
+    ===================================================== */
+
+    socket.on(
+      'playCards',
+      data => {
+        const room =
+          socket.roomId
+            ?
+            rooms.get(
+              socket.roomId
+            )
+            :
+            null;
+
+        if (
+          !room
+          ||
+          !room.game
+          ||
+          room.game.processing
+          ||
+          room.game.gameOver
+        ) {
+          return;
+        }
+
+        const active =
+          room.players[
+            room.game
+              .currentTurnIndex
+          ];
+
+        if (
+          !active
+          ||
+          active.id !==
+          socket.id
+        ) {
+          return socket.emit(
+            'errorMessage',
+            'ახლა შენი სვლა არ არის.'
+          );
+        }
+
+        const hand =
+          room.game.hands[
+            socket.id
+          ] ||
+          [];
+
+        let indexes =
+          Array.isArray(
+            data &&
+            data.cardIndices
+          )
+            ?
+            [
+              ...new Set(
+                data.cardIndices
+              )
+            ]
+            :
+            [];
+
+        indexes =
+          indexes
+            .filter(
+              index =>
+                Number.isInteger(
+                  index
+                )
+                &&
+                index >= 0
+                &&
+                index <
+                hand.length
+            )
+            .sort(
+              (
+                a,
+                b
+              ) =>
+                a - b
+            );
+
+        const result =
+          applyPlay(
+            room,
+            active,
+            indexes
+          );
+
+        if (
+          !result.ok
+        ) {
+          socket.emit(
+            'errorMessage',
+            result.message
+          );
+        }
+      }
+    );
+
+    /* =====================================================
+       QUICK MESSAGE
+    ===================================================== */
+
+    socket.on(
+      'quickMessage',
+      data => {
+        const room =
+          socket.roomId
+            ?
+            rooms.get(
+              socket.roomId
+            )
+            :
+            null;
+
+        if (
+          !room
+        ) {
+          return;
+        }
+
+        const player =
+          room.players.find(
+            item =>
+              item.id ===
+              socket.id
+          );
+
+        if (
+          !player
+        ) {
+          return;
+        }
+
+        const allowed = [
+          '👍 კარგი იყო',
+          '⚡ სწრაფად',
+          '😂 ჰაჰა',
+          '🔥 მაგარია',
+          '👏 ბრავო',
+          '🤝 წარმატებები'
+        ];
+
+        const text =
+          String(
+            data &&
+            data.text ||
+            ''
+          );
+
+        if (
+          !allowed.includes(
+            text
+          )
+        ) {
+          return;
+        }
+
+        io.to(
+          room.id
+        ).emit(
+          'quickMessage',
+          {
+            playerId:
+              player.id,
+
+            playerName:
+              player.name,
+
+            text
+          }
         );
-    }
+      }
+    );
+
+    /* =====================================================
+       DISCONNECT
+    ===================================================== */
+
+    socket.on(
+      'disconnect',
+      () => {
+        const room =
+          socket.roomId
+            ?
+            rooms.get(
+              socket.roomId
+            )
+            :
+            null;
+
+        if (
+          !room
+        ) {
+          return;
+        }
+
+        room.players =
+          room.players.filter(
+            player =>
+              player.id !==
+              socket.id
+          );
+
+        const humans =
+          room.players.filter(
+            player =>
+              !player.isBot
+          );
+
+        if (
+          !humans.length
+        ) {
+          clearTimeout(
+            room.timer
+          );
+
+          rooms.delete(
+            room.id
+          );
+        } else {
+          io.to(
+            room.id
+          ).emit(
+            'errorMessage',
+            'ერთ-ერთმა მოთამაშემ დატოვა მაგიდა.'
+          );
+        }
+      }
+    );
+  }
 );
 
 /* =========================================================
    FRONTEND
 ========================================================= */
 
-const PAGE =
-String.raw`
+const PAGE = String.raw`
 <!doctype html>
-
 <html lang="ka">
 
 <head>
@@ -1607,12 +2004,12 @@ String.raw`
 <meta charset="utf-8">
 
 <meta
-    name="viewport"
-    content="width=device-width,initial-scale=1,viewport-fit=cover"
+  name="viewport"
+  content="width=device-width,initial-scale=1,viewport-fit=cover"
 >
 
 <title>
-    Written Bura
+  Written Bura
 </title>
 
 <script src="/socket.io/socket.io.js"></script>
@@ -1620,143 +2017,131 @@ String.raw`
 <style>
 
 @import url(
-'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Georgian:wght@400;500;600;700;800&display=swap'
+  'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Georgian:wght@400;500;600;700;800&display=swap'
 );
 
 * {
-    box-sizing:
-        border-box;
+  box-sizing:
+    border-box;
 }
 
 html,
 body {
+  margin:
+    0;
 
-    margin:
-        0;
+  min-height:
+    100%;
 
-    min-height:
-        100%;
+  font-family:
+    'Noto Sans Georgian',
+    Inter,
+    sans-serif;
 
-    font-family:
-        'Noto Sans Georgian',
-        Inter,
-        sans-serif;
+  background:
+    #07100e;
 
-    background:
-        #07100e;
-
-    color:
-        #eef7f2;
+  color:
+    #eef7f2;
 }
 
 button,
 input,
 select {
-
-    font:
-        inherit;
-}
-
-.hidden {
-
-    display:
-        none !important;
+  font:
+    inherit;
 }
 
 :root {
+  --line:
+    rgba(
+      255,
+      255,
+      255,
+      .10
+    );
 
-    --bg:
-        #07100e;
+  --gold:
+    #e9c46a;
 
-    --glass:
-        rgba(16,28,25,.72);
+  --gold2:
+    #ffdc86;
 
-    --glass2:
-        rgba(11,20,18,.88);
+  --green:
+    #34d399;
 
-    --line:
-        rgba(255,255,255,.10);
+  --green2:
+    #10b981;
 
-    --gold:
-        #e9c46a;
+  --muted:
+    #9fb2aa;
 
-    --gold2:
-        #ffdc86;
+  --felt:
+    #0f5d46;
 
-    --green:
-        #34d399;
-
-    --green2:
-        #10b981;
-
-    --text:
-        #f4fbf7;
-
-    --muted:
-        #9fb2aa;
-
-    --danger:
-        #ff6b6b;
-
-    --wood:
-        #5f3b25;
-
-    --felt:
-        #0f5d46;
-
-    --felt2:
-        #0b3e32;
+  --felt2:
+    #0b3e32;
 }
 
 body {
+  background:
 
-    background:
+    radial-gradient(
+      circle at 50% -10%,
+      rgba(
+        52,
+        211,
+        153,
+        .16
+      ),
+      transparent 36%
+    ),
 
-        radial-gradient(
-            circle at 50% -10%,
-            rgba(52,211,153,.16),
-            transparent 36%
-        ),
+    linear-gradient(
+      160deg,
+      #050a09,
+      #091412 52%,
+      #07100e
+    );
 
-        radial-gradient(
-            circle at 100% 10%,
-            rgba(233,196,106,.12),
-            transparent 28%
-        ),
-
-        linear-gradient(
-            160deg,
-            #050a09,
-            #091412 52%,
-            #07100e
-        );
-
-    overflow-x:
-        hidden;
+  overflow-x:
+    hidden;
 }
 
 .glass {
+  background:
 
-    background:
-        linear-gradient(
-            145deg,
-            rgba(255,255,255,.06),
-            rgba(255,255,255,.02)
-        );
+    linear-gradient(
+      145deg,
+      rgba(
+        255,
+        255,
+        255,
+        .07
+      ),
+      rgba(
+        255,
+        255,
+        255,
+        .02
+      )
+    );
 
-    border:
-        1px solid
-        var(--line);
+  border:
+    1px solid
+    var(--line);
 
-    box-shadow:
-        0 20px 60px
-        rgba(0,0,0,.28);
+  box-shadow:
+    0 20px 60px
+    rgba(
+      0,
+      0,
+      0,
+      .28
+    );
 
-    backdrop-filter:
-        blur(18px);
-
-    -webkit-backdrop-filter:
-        blur(18px);
+  backdrop-filter:
+    blur(18px);
 }
 
 /* =========================================================
@@ -1764,842 +2149,904 @@ body {
 ========================================================= */
 
 #lobby {
+  min-height:
+    100vh;
 
-    min-height:
-        100vh;
+  padding:
+    24px;
 
-    padding:
-        24px;
+  position:
+    relative;
+
+  overflow:
+    hidden;
+}
+
+#lobby:before,
+#lobby:after {
+  position:
+    absolute;
+
+  font-size:
+    180px;
+
+  opacity:
+    .035;
+
+  filter:
+    blur(1px);
+
+  pointer-events:
+    none;
+}
+
+#lobby:before {
+  content:
+    '♠  ♥';
+
+  left:
+    -40px;
+
+  top:
+    70px;
+
+  transform:
+    rotate(-15deg);
+}
+
+#lobby:after {
+  content:
+    '♦  ♣';
+
+  right:
+    -30px;
+
+  bottom:
+    30px;
+
+  transform:
+    rotate(12deg);
 }
 
 .shell {
+  width:
+    min(
+      1160px,
+      100%
+    );
 
-    width:
-        min(1160px,100%);
+  margin:
+    auto;
 
-    margin:
-        auto;
+  position:
+    relative;
+
+  z-index:
+    1;
 }
 
 .top {
+  display:
+    flex;
 
-    display:
-        flex;
+  align-items:
+    center;
 
-    align-items:
-        center;
+  justify-content:
+    space-between;
 
-    justify-content:
-        space-between;
+  gap:
+    16px;
 
-    gap:
-        16px;
-
-    margin-bottom:
-        24px;
+  margin-bottom:
+    24px;
 }
 
 .brand {
+  font-size:
+    24px;
 
-    font-size:
-        24px;
-
-    font-weight:
-        800;
-
-    letter-spacing:
-        .3px;
+  font-weight:
+    800;
 }
 
 .brand span {
-
-    color:
-        var(--gold);
+  color:
+    var(--gold);
 }
 
 .testerHint {
+  font-size:
+    12px;
 
-    font-size:
-        12px;
-
-    color:
-        var(--muted);
+  color:
+    var(--muted);
 }
 
 .hero {
+  display:
+    grid;
 
-    display:
-        grid;
+  grid-template-columns:
+    1.2fr
+    .8fr;
 
-    grid-template-columns:
-        1.2fr .8fr;
-
-    gap:
-        18px;
+  gap:
+    18px;
 }
 
 .heroCard,
 .joinCard {
+  border-radius:
+    24px;
 
-    border-radius:
-        24px;
-
-    padding:
-        28px;
+  padding:
+    28px;
 }
 
 .heroCard {
+  min-height:
+    330px;
 
-    min-height:
-        330px;
+  position:
+    relative;
 
-    position:
-        relative;
-
-    overflow:
-        hidden;
+  overflow:
+    hidden;
 }
 
 .heroCard:after {
+  content:
+    '♠  ♣  ♦  ♥';
 
-    content:
-        "♠  ♣  ♦  ♥";
+  position:
+    absolute;
 
-    position:
-        absolute;
+  right:
+    28px;
 
-    right:
-        28px;
+  bottom:
+    28px;
 
-    bottom:
-        28px;
+  font-size:
+    64px;
 
-    font-size:
-        64px;
+  color:
+    rgba(
+      255,
+      255,
+      255,
+      .06
+    );
 
-    color:
-        rgba(255,255,255,.06);
-
-    transform:
-        rotate(-6deg);
+  transform:
+    rotate(-6deg);
 }
 
 .eyebrow {
+  display:
+    inline-flex;
 
-    display:
-        inline-flex;
+  padding:
+    7px 11px;
 
-    padding:
-        7px 11px;
+  border-radius:
+    999px;
 
-    border-radius:
-        999px;
+  background:
+    rgba(
+      52,
+      211,
+      153,
+      .10
+    );
 
-    background:
-        rgba(52,211,153,.10);
+  border:
+    1px solid
+    rgba(
+      52,
+      211,
+      153,
+      .24
+    );
 
-    border:
-        1px solid
-        rgba(52,211,153,.24);
+  color:
+    #86efc2;
 
-    color:
-        #86efc2;
+  font-size:
+    11px;
 
-    font-size:
-        11px;
-
-    font-weight:
-        700;
+  font-weight:
+    700;
 }
 
 .heroCard h1 {
+  font-size:
+    46px;
 
-    font-size:
-        46px;
+  line-height:
+    1.05;
 
-    line-height:
-        1.05;
-
-    margin:
-        20px 0 12px;
-
-    max-width:
-        640px;
+  margin:
+    20px 0 12px;
 }
 
 .heroCard p {
+  max-width:
+    620px;
 
-    max-width:
-        620px;
+  color:
+    var(--muted);
 
-    color:
-        var(--muted);
+  line-height:
+    1.7;
 
-    line-height:
-        1.7;
-
-    font-size:
-        14px;
-}
-
-.features {
-
-    display:
-        flex;
-
-    flex-wrap:
-        wrap;
-
-    gap:
-        8px;
-
-    margin-top:
-        18px;
-}
-
-.chip {
-
-    padding:
-        7px 10px;
-
-    border-radius:
-        999px;
-
-    background:
-        rgba(255,255,255,.05);
-
-    border:
-        1px solid
-        var(--line);
-
-    font-size:
-        11px;
-
-    color:
-        #cfe0d8;
-}
-
-.joinCard h2 {
-
-    margin:
-        0 0 18px;
-
-    font-size:
-        22px;
+  font-size:
+    14px;
 }
 
 .field {
-
-    margin:
-        12px 0;
+  margin:
+    12px 0;
 }
 
 .field label {
+  display:
+    block;
 
-    display:
-        block;
+  margin-bottom:
+    7px;
 
-    margin-bottom:
-        7px;
+  color:
+    #b9cbc3;
 
-    color:
-        #b9cbc3;
+  font-size:
+    11px;
 
-    font-size:
-        11px;
-
-    font-weight:
-        700;
+  font-weight:
+    700;
 }
 
 .field input,
 .field select {
+  width:
+    100%;
 
-    width:
-        100%;
+  height:
+    44px;
 
-    height:
-        44px;
+  border-radius:
+    12px;
 
-    border-radius:
-        12px;
+  border:
+    1px solid
+    var(--line);
 
-    border:
-        1px solid
-        var(--line);
+  background:
+    rgba(
+      3,
+      9,
+      8,
+      .65
+    );
 
-    background:
-        rgba(3,9,8,.65);
+  color:
+    #fff;
 
-    color:
-        var(--text);
+  padding:
+    0 12px;
 
-    padding:
-        0 12px;
-
-    outline:
-        none;
-}
-
-.field input:focus,
-.field select:focus {
-
-    border-color:
-        rgba(52,211,153,.65);
-
-    box-shadow:
-        0 0 0 4px
-        rgba(52,211,153,.08);
+  outline:
+    none;
 }
 
 .row2 {
+  display:
+    grid;
 
-    display:
-        grid;
+  grid-template-columns:
+    1fr 1fr;
 
-    grid-template-columns:
-        1fr 1fr;
-
-    gap:
-        10px;
+  gap:
+    10px;
 }
 
 .primary {
+  width:
+    100%;
 
-    width:
-        100%;
+  height:
+    46px;
 
-    height:
-        46px;
+  border:
+    0;
 
-    border:
-        0;
+  border-radius:
+    13px;
 
-    border-radius:
-        13px;
+  background:
 
-    background:
-        linear-gradient(
-            135deg,
-            var(--green),
-            var(--green2)
-        );
+    linear-gradient(
+      135deg,
+      var(--green),
+      var(--green2)
+    );
 
-    color:
-        #04271b;
+  color:
+    #04271b;
 
-    font-weight:
-        800;
+  font-weight:
+    800;
 
-    box-shadow:
-        0 14px 28px
-        rgba(16,185,129,.24);
+  box-shadow:
+    0 14px 28px
+    rgba(
+      16,
+      185,
+      129,
+      .24
+    );
 
-    cursor:
-        pointer;
-
-    transition:
-        .18s;
-}
-
-.primary:hover {
-
-    transform:
-        translateY(-1px);
-
-    filter:
-        brightness(1.05);
+  cursor:
+    pointer;
 }
 
 .wait {
+  min-height:
+    20px;
 
-    min-height:
-        20px;
+  margin-top:
+    10px;
 
-    margin-top:
-        10px;
+  color:
+    var(--gold2);
 
-    color:
-        var(--gold2);
-
-    font-size:
-        12px;
+  font-size:
+    12px;
 }
 
 .stakes {
+  display:
+    grid;
 
-    display:
-        grid;
+  grid-template-columns:
+    repeat(
+      5,
+      1fr
+    );
 
-    grid-template-columns:
-        repeat(5,1fr);
+  gap:
+    10px;
 
-    gap:
-        10px;
-
-    margin-top:
-        18px;
+  margin-top:
+    18px;
 }
 
 .stake {
+  padding:
+    16px;
 
-    padding:
-        16px;
+  border-radius:
+    16px;
 
-    border-radius:
-        16px;
+  border:
+    1px solid
+    var(--line);
 
-    border:
-        1px solid
-        var(--line);
+  background:
+    rgba(
+      255,
+      255,
+      255,
+      .035
+    );
 
-    background:
-        rgba(255,255,255,.035);
+  color:
+    var(--muted);
 
-    color:
-        var(--muted);
+  cursor:
+    pointer;
 
-    cursor:
-        pointer;
-
-    transition:
-        .18s;
+  transition:
+    .18s;
 }
 
 .stake:hover,
 .stake.active {
+  border-color:
+    rgba(
+      233,
+      196,
+      106,
+      .65
+    );
 
-    border-color:
-        rgba(233,196,106,.55);
+  background:
+    rgba(
+      233,
+      196,
+      106,
+      .09
+    );
 
-    background:
-        rgba(233,196,106,.08);
+  color:
+    var(--gold2);
 
-    color:
-        var(--gold2);
+  transform:
+    translateY(-4px)
+    scale(1.02);
 
-    transform:
-        translateY(-2px);
+  box-shadow:
+    0 12px 28px
+    rgba(
+      0,
+      0,
+      0,
+      .25
+    );
 }
 
 .stake b {
+  display:
+    block;
 
-    display:
-        block;
-
-    font-size:
-        20px;
-
-    color:
-        inherit;
+  font-size:
+    20px;
 }
 
 .stake span {
-
-    font-size:
-        10px;
+  font-size:
+    10px;
 }
 
 /* =========================================================
-   GAME TOP
+   GAME
 ========================================================= */
 
 #game {
+  display:
+    none;
 
-    display:
-        none;
+  min-height:
+    100vh;
 
-    min-height:
-        100vh;
-
-    padding:
-        14px;
+  padding:
+    14px;
 }
 
 .gameShell {
+  width:
+    min(
+      1500px,
+      100%
+    );
 
-    width:
-        min(1500px,100%);
-
-    margin:
-        auto;
+  margin:
+    auto;
 }
 
 .gameTop {
+  display:
+    grid;
 
-    display:
-        grid;
+  grid-template-columns:
+    1fr auto auto;
 
-    grid-template-columns:
-        1fr auto auto;
+  gap:
+    12px;
 
-    gap:
-        12px;
+  align-items:
+    center;
 
-    align-items:
-        center;
-
-    margin-bottom:
-        10px;
+  margin-bottom:
+    10px;
 }
 
 .titleBlock {
+  padding:
+    14px 16px;
 
-    padding:
-        14px 16px;
-
-    border-radius:
-        16px;
+  border-radius:
+    16px;
 }
 
 .titleBlock b {
-
-    font-size:
-        18px;
+  font-size:
+    18px;
 }
 
 .titleBlock span {
+  display:
+    block;
 
-    display:
-        block;
+  color:
+    var(--muted);
 
-    color:
-        var(--muted);
-
-    font-size:
-        11px;
-
-    margin-top:
-        2px;
+  font-size:
+    11px;
 }
 
 .hud {
+  display:
+    flex;
 
-    display:
-        flex;
+  gap:
+    8px;
 
-    gap:
-        8px;
+  flex-wrap:
+    wrap;
 
-    flex-wrap:
-        wrap;
-
-    justify-content:
-        flex-end;
+  justify-content:
+    flex-end;
 }
 
 .hudBox {
+  min-width:
+    84px;
 
-    min-width:
-        84px;
+  padding:
+    10px 12px;
 
-    padding:
-        10px 12px;
+  border-radius:
+    14px;
 
-    border-radius:
-        14px;
-
-    text-align:
-        center;
+  text-align:
+    center;
 }
 
 .hudBox small {
+  display:
+    block;
 
-    display:
-        block;
+  color:
+    var(--muted);
 
-    color:
-        var(--muted);
-
-    font-size:
-        9px;
+  font-size:
+    9px;
 }
 
 .hudBox b {
+  display:
+    block;
 
-    display:
-        block;
+  color:
+    var(--gold2);
 
-    color:
-        var(--gold2);
-
-    font-size:
-        14px;
-
-    margin-top:
-        2px;
+  font-size:
+    14px;
 }
 
 .sfxBtn,
 .exitBtn {
+  height:
+    42px;
 
-    height:
-        42px;
+  padding:
+    0 14px;
 
-    padding:
-        0 14px;
+  border-radius:
+    12px;
 
-    border-radius:
-        12px;
+  border:
+    1px solid
+    var(--line);
 
-    border:
-        1px solid
-        var(--line);
+  background:
+    rgba(
+      255,
+      255,
+      255,
+      .05
+    );
 
-    background:
-        rgba(255,255,255,.05);
+  color:
+    #fff;
 
-    color:
-        var(--text);
-
-    cursor:
-        pointer;
+  cursor:
+    pointer;
 }
 
 .status {
+  text-align:
+    center;
 
-    text-align:
-        center;
+  min-height:
+    28px;
 
-    min-height:
-        28px;
+  color:
+    var(--gold2);
 
-    color:
-        var(--gold2);
+  font-weight:
+    800;
 
-    font-weight:
-        800;
+  font-size:
+    13px;
+}
 
-    font-size:
-        13px;
+.layout {
+  display:
+    grid;
+
+  grid-template-columns:
+    minmax(
+      0,
+      1fr
+    )
+    300px;
+
+  gap:
+    14px;
 }
 
 /* =========================================================
-   GAME LAYOUT
+   TABLE
 ========================================================= */
 
-.layout {
-
-    display:
-        grid;
-
-    grid-template-columns:
-        minmax(0,1fr)
-        300px;
-
-    gap:
-        14px;
-}
-
 .tableStage {
+  position:
+    relative;
 
-    position:
-        relative;
+  height:
+    700px;
 
-    height:
-        700px;
+  border-radius:
+    28px;
 
-    border-radius:
-        28px;
+  overflow:
+    hidden;
 
-    overflow:
-        hidden;
+  background:
 
-    background:
+    radial-gradient(
+      circle at 50% 20%,
+      rgba(
+        255,
+        255,
+        255,
+        .05
+      ),
+      transparent 25%
+    ),
 
-        radial-gradient(
-            circle at 50% 20%,
-            rgba(255,255,255,.05),
-            transparent 25%
-        ),
+    linear-gradient(
+      145deg,
+      #17110d,
+      #0a0c0b
+    );
 
-        linear-gradient(
-            145deg,
-            #17110d,
-            #0a0c0b
-        );
+  border:
+    1px solid
+    var(--line);
 
-    border:
-        1px solid
-        var(--line);
-
-    box-shadow:
-        0 28px 90px
-        rgba(0,0,0,.46);
+  box-shadow:
+    0 28px 90px
+    rgba(
+      0,
+      0,
+      0,
+      .46
+    );
 }
 
 .tableWood {
+  position:
+    absolute;
 
-    position:
-        absolute;
+  inset:
+    45px 70px 80px;
 
-    inset:
-        45px 70px 80px;
+  border-radius:
+    50% / 38%;
 
-    border-radius:
-        50% / 38%;
+  background:
 
-    background:
-        linear-gradient(
-            145deg,
-            #8b5a36,
-            #4f2e1d 62%,
-            #2f1b12
-        );
+    linear-gradient(
+      145deg,
+      #8b5a36,
+      #4f2e1d 62%,
+      #2f1b12
+    );
 
-    box-shadow:
+  box-shadow:
 
-        inset 0 0 0 14px
-        rgba(45,24,14,.65),
+    inset 0 0 0 14px
+    rgba(
+      45,
+      24,
+      14,
+      .65
+    ),
 
-        inset 0 0 70px
-        rgba(0,0,0,.45),
+    inset 0 0 70px
+    rgba(
+      0,
+      0,
+      0,
+      .45
+    ),
 
-        0 25px 45px
-        rgba(0,0,0,.38);
+    0 25px 45px
+    rgba(
+      0,
+      0,
+      0,
+      .38
+    );
 }
 
 .felt {
+  position:
+    absolute;
 
-    position:
-        absolute;
+  inset:
+    82px 110px 118px;
 
-    inset:
-        82px 110px 118px;
+  border-radius:
+    50% / 38%;
 
-    border-radius:
-        50% / 38%;
+  background:
 
-    background:
-        radial-gradient(
-            ellipse at center,
-            var(--felt),
-            var(--felt2) 72%
-        );
+    radial-gradient(
+      ellipse at center,
+      var(--felt),
+      var(--felt2) 72%
+    );
 
-    border:
-        3px solid
-        rgba(255,255,255,.07);
+  border:
+    3px solid
+    rgba(
+      255,
+      255,
+      255,
+      .07
+    );
 
-    box-shadow:
-        inset 0 0 55px
-        rgba(0,0,0,.38);
+  box-shadow:
+    inset 0 0 55px
+    rgba(
+      0,
+      0,
+      0,
+      .38
+    );
 }
 
 .felt:after {
+  content:
+    'WRITTEN BURA';
 
-    content:
-        "WRITTEN BURA";
+  position:
+    absolute;
 
-    position:
-        absolute;
+  left:
+    50%;
 
-    left:
-        50%;
+  top:
+    50%;
 
-    top:
-        50%;
+  transform:
+    translate(
+      -50%,
+      -50%
+    );
 
-    transform:
-        translate(-50%,-50%);
+  font-weight:
+    800;
 
-    font-weight:
-        800;
+  letter-spacing:
+    8px;
 
-    letter-spacing:
-        8px;
+  color:
+    rgba(
+      255,
+      255,
+      255,
+      .05
+    );
 
-    color:
-        rgba(255,255,255,.05);
-
-    white-space:
-        nowrap;
+  white-space:
+    nowrap;
 }
 
 /* =========================================================
-   DECK + TRUMP
+   DECK
 ========================================================= */
 
 .deckZone {
+  position:
+    absolute;
 
-    position:
-        absolute;
+  left:
+    50%;
 
-    left:
-        50%;
+  top:
+    44%;
 
-    top:
-        45%;
+  transform:
+    translate(
+      -50%,
+      -50%
+    );
 
-    transform:
-        translate(-50%,-50%);
+  display:
+    flex;
 
-    display:
-        flex;
+  gap:
+    18px;
 
-    gap:
-        18px;
+  align-items:
+    center;
 
-    align-items:
-        center;
-
-    z-index:
-        4;
+  z-index:
+    4;
 }
 
 .deckStack {
+  width:
+    58px;
 
-    width:
-        58px;
+  height:
+    82px;
 
-    height:
-        82px;
+  border-radius:
+    7px;
 
-    border-radius:
-        7px;
+  border:
+    2px solid
+    rgba(
+      255,
+      255,
+      255,
+      .8
+    );
 
-    border:
-        2px solid
-        rgba(255,255,255,.8);
+  background:
 
-    background:
-        repeating-linear-gradient(
-            45deg,
-            #24384d 0 4px,
-            #152335 4px 8px
-        );
+    repeating-linear-gradient(
+      45deg,
+      #24384d 0 4px,
+      #152335 4px 8px
+    );
 
-    box-shadow:
+  box-shadow:
 
-        5px 5px 0
-        rgba(255,255,255,.16),
+    5px 5px 0
+    rgba(
+      255,
+      255,
+      255,
+      .16
+    ),
 
-        0 8px 20px
-        rgba(0,0,0,.35);
+    0 8px 20px
+    rgba(
+      0,
+      0,
+      0,
+      .35
+    );
 }
 
 .deckLabel {
+  text-align:
+    center;
 
-    text-align:
-        center;
+  font-size:
+    10px;
 
-    font-size:
-        10px;
+  color:
+    #d7e7df;
 
-    color:
-        #d7e7df;
-
-    margin-top:
-        4px;
+  margin-top:
+    4px;
 }
 
 .trumpSlot {
+  width:
+    58px;
 
-    width:
-        58px;
-
-    height:
-        82px;
+  height:
+    82px;
 }
 
 /* =========================================================
@@ -2607,288 +3054,362 @@ body {
 ========================================================= */
 
 .tableCards {
+  position:
+    absolute;
 
-    position:
-        absolute;
+  left:
+    50%;
 
-    left:
-        50%;
+  top:
+    56%;
 
-    top:
-        56%;
+  transform:
+    translate(
+      -50%,
+      -50%
+    );
 
-    transform:
-        translate(-50%,-50%);
+  z-index:
+    6;
 
-    z-index:
-        6;
+  display:
+    flex;
 
-    display:
-        flex;
+  gap:
+    10px;
 
-    gap:
-        10px;
+  align-items:
+    center;
 
-    align-items:
-        center;
+  justify-content:
+    center;
 
-    justify-content:
-        center;
-
-    max-width:
-        62%;
+  max-width:
+    62%;
 }
 
 .playGroup {
+  display:
+    flex;
 
-    display:
-        flex;
+  flex-direction:
+    column;
 
-    flex-direction:
-        column;
-
-    align-items:
-        center;
+  align-items:
+    center;
 }
 
 .playName {
+  font-size:
+    8px;
 
-    font-size:
-        8px;
+  padding:
+    3px 7px;
 
-    padding:
-        3px 7px;
+  border-radius:
+    999px;
 
-    border-radius:
-        999px;
+  background:
+    rgba(
+      0,
+      0,
+      0,
+      .38
+    );
 
-    background:
-        rgba(0,0,0,.38);
-
-    margin-bottom:
-        4px;
+  margin-bottom:
+    4px;
 }
 
 .playGroup.winner
 .card {
+  box-shadow:
+    0 0 28px
+    rgba(
+      255,
+      220,
+      134,
+      .95
+    );
 
-    box-shadow:
-        0 0 28px
-        rgba(255,220,134,.95);
-
-    border-color:
-        var(--gold2);
+  border-color:
+    var(--gold2);
 }
 
 /* =========================================================
-   PLAYERS
+   PLAYER SEATS
 ========================================================= */
 
 .seat {
+  position:
+    absolute;
 
-    position:
-        absolute;
+  transform:
+    translate(
+      -50%,
+      -50%
+    );
 
-    transform:
-        translate(-50%,-50%);
+  width:
+    160px;
 
-    width:
-        160px;
+  text-align:
+    center;
 
-    text-align:
-        center;
-
-    z-index:
-        8;
+  z-index:
+    8;
 }
 
 .seatBox {
+  padding:
+    8px;
 
-    padding:
-        8px;
+  border-radius:
+    16px;
 
-    border-radius:
-        16px;
+  background:
+    rgba(
+      7,
+      13,
+      11,
+      .80
+    );
 
-    background:
-        rgba(7,13,11,.80);
+  border:
+    1px solid
+    var(--line);
 
-    border:
-        1px solid
-        var(--line);
+  backdrop-filter:
+    blur(10px);
 
-    backdrop-filter:
-        blur(10px);
+  transition:
+    .2s;
 
-    transition:
-        .2s;
+  position:
+    relative;
 }
 
 .avatar {
+  width:
+    54px;
 
-    width:
-        54px;
+  height:
+    54px;
 
-    height:
-        54px;
+  border-radius:
+    50%;
 
-    border-radius:
-        50%;
+  margin:
+    auto;
 
-    margin:
-        auto;
+  background:
 
-    background:
-        radial-gradient(
-            circle at 40% 30%,
-            #d6b79f,
-            #8c6048 48%,
-            #2b1d17 49%
-        );
+    radial-gradient(
+      circle at 40% 30%,
+      #d6b79f,
+      #8c6048 48%,
+      #2b1d17 49%
+    );
 
-    border:
-        3px solid
-        rgba(233,196,106,.65);
+  border:
+    3px solid
+    rgba(
+      233,
+      196,
+      106,
+      .65
+    );
 
-    box-shadow:
-        0 8px 20px
-        rgba(0,0,0,.35);
+  box-shadow:
+    0 8px 20px
+    rgba(
+      0,
+      0,
+      0,
+      .35
+    );
+
+  cursor:
+    pointer;
+
+  position:
+    relative;
 }
 
 .seat.current
 .seatBox {
+  border-color:
+    var(--gold2);
 
-    border-color:
-        var(--gold2);
+  box-shadow:
 
-    box-shadow:
+    0 0 0 3px
+    rgba(
+      233,
+      196,
+      106,
+      .10
+    ),
 
-        0 0 0 3px
-        rgba(233,196,106,.10),
-
-        0 0 26px
-        rgba(233,196,106,.28);
-}
-
-.seat.current
-.avatar {
-
-    animation:
-        pulseRing
-        1.35s
-        infinite;
+    0 0 26px
+    rgba(
+      233,
+      196,
+      106,
+      .28
+    );
 }
 
 .seatName {
+  margin-top:
+    5px;
 
-    margin-top:
-        5px;
+  font-size:
+    11px;
 
-    font-size:
-        11px;
-
-    font-weight:
-        800;
+  font-weight:
+    800;
 }
 
 .seatInfo {
+  font-size:
+    9px;
 
-    margin-top:
-        2px;
-
-    font-size:
-        9px;
-
-    color:
-        var(--muted);
+  color:
+    var(--muted);
 }
 
 .backs {
+  display:
+    flex;
 
-    display:
-        flex;
+  justify-content:
+    center;
 
-    justify-content:
-        center;
-
-    margin-top:
-        5px;
+  margin-top:
+    5px;
 }
 
 .back {
+  width:
+    17px;
 
-    width:
-        17px;
+  height:
+    25px;
 
-    height:
-        25px;
+  margin-left:
+    -6px;
 
-    margin-left:
-        -6px;
+  border-radius:
+    3px;
 
-    border-radius:
-        3px;
+  border:
+    1px solid
+    rgba(
+      255,
+      255,
+      255,
+      .65
+    );
 
-    border:
-        1px solid
-        rgba(255,255,255,.65);
+  background:
 
-    background:
-        repeating-linear-gradient(
-            45deg,
-            #25384d 0 3px,
-            #132133 3px 6px
-        );
+    repeating-linear-gradient(
+      45deg,
+      #25384d 0 3px,
+      #132133 3px 6px
+    );
 }
 
 .back:first-child {
-
-    margin-left:
-        0;
+  margin-left:
+    0;
 }
 
-.turnBar {
+/* =========================================================
+   TIMER
+========================================================= */
 
-    height:
-        3px;
+.timerRing {
+  position:
+    absolute;
 
-    border-radius:
-        99px;
+  inset:
+    -7px;
 
-    background:
-        rgba(255,255,255,.08);
+  border-radius:
+    50%;
 
-    overflow:
-        hidden;
+  background:
 
-    margin-top:
-        6px;
+    conic-gradient(
+      var(--gold)
+      var(--turn,100%),
+      rgba(
+        255,
+        255,
+        255,
+        .08
+      ) 0
+    );
+
+  z-index:
+    -1;
+
+  filter:
+    drop-shadow(
+      0 0 7px
+      rgba(
+        233,
+        196,
+        106,
+        .35
+      )
+    );
 }
 
-.seat.current
-.turnBar:after {
+/* =========================================================
+   REACTION
+========================================================= */
 
-    content:
-        "";
+.reactionBubble {
+  position:
+    absolute;
 
-    display:
-        block;
+  left:
+    50%;
 
-    height:
-        100%;
+  top:
+    -28px;
 
-    background:
-        linear-gradient(
-            90deg,
-            var(--green),
-            var(--gold)
-        );
+  transform:
+    translateX(-50%);
 
-    animation:
-        turnTimer
-        7s
-        linear
-        infinite;
+  background:
+    #fff;
+
+  color:
+    #111;
+
+  padding:
+    5px 8px;
+
+  border-radius:
+    10px;
+
+  font-size:
+    10px;
+
+  white-space:
+    nowrap;
+
+  animation:
+    bubble
+    2.4s
+    forwards;
+
+  z-index:
+    20;
 }
 
 /* =========================================================
@@ -2896,156 +3417,177 @@ body {
 ========================================================= */
 
 .handZone {
+  position:
+    absolute;
 
-    position:
-        absolute;
+  left:
+    50%;
 
-    left:
-        50%;
+  bottom:
+    18px;
 
-    bottom:
-        18px;
+  transform:
+    translateX(-50%);
 
-    transform:
-        translateX(-50%);
+  z-index:
+    10;
 
-    z-index:
-        10;
+  width:
+    min(
+      820px,
+      94%
+    );
 
-    width:
-        min(820px,94%);
-
-    text-align:
-        center;
+  text-align:
+    center;
 }
 
 .hand {
+  position:
+    relative;
 
-    position:
-        relative;
+  height:
+    130px;
 
-    height:
-        130px;
+  display:
+    flex;
 
-    display:
-        flex;
+  justify-content:
+    center;
 
-    justify-content:
-        center;
-
-    align-items:
-        flex-end;
+  align-items:
+    flex-end;
 }
 
-.hand
-.card {
+.hand .card {
+  position:
+    relative;
 
-    position:
-        relative;
+  margin-left:
+    -18px;
 
-    margin-left:
-        -18px;
+  transform-origin:
+    50% 110%;
 
-    transform-origin:
-        50% 110%;
+  transition:
 
-    transition:
+    transform .2s ease,
 
-        transform .2s ease,
+    filter .2s ease,
 
-        filter .2s ease,
-
-        box-shadow .2s ease;
+    box-shadow .2s ease;
 }
 
-.hand
-.card:first-child {
-
-    margin-left:
-        0;
+.hand .card:first-child {
+  margin-left:
+    0;
 }
 
-.hand
-.card:hover {
+.hand .card:hover {
+  transform:
+    translateY(-18px)
+    scale(1.05) !important;
 
-    transform:
-        translateY(-18px)
-        scale(1.05) !important;
-
-    z-index:
-        50;
+  z-index:
+    50;
 }
 
-.hand
-.card.selected {
+.hand .card.selected {
+  transform:
+    translateY(-24px)
+    scale(1.06) !important;
 
-    transform:
-        translateY(-26px)
-        scale(1.06) !important;
+  box-shadow:
 
-    box-shadow:
+    0 0 0 3px
+    rgba(
+      52,
+      211,
+      153,
+      .65
+    ),
 
-        0 0 0 3px
-        rgba(52,211,153,.6),
+    0 16px 30px
+    rgba(
+      0,
+      0,
+      0,
+      .35
+    );
 
-        0 16px 30px
-        rgba(0,0,0,.35);
+  border-color:
+    var(--green);
 
-    z-index:
-        60;
+  z-index:
+    60;
 }
 
 .playBtn {
+  margin-top:
+    6px;
 
-    margin-top:
-        6px;
+  min-width:
+    190px;
 
-    min-width:
-        190px;
+  height:
+    44px;
 
-    height:
-        44px;
+  border:
+    0;
 
-    border:
-        0;
+  border-radius:
+    999px;
 
-    border-radius:
-        999px;
+  background:
 
-    background:
-        linear-gradient(
-            135deg,
-            var(--green),
-            var(--green2)
-        );
+    linear-gradient(
+      135deg,
+      var(--green),
+      var(--green2)
+    );
 
-    color:
-        #02261a;
+  color:
+    #02261a;
 
-    font-weight:
-        800;
+  font-weight:
+    800;
 
-    cursor:
-        pointer;
+  cursor:
+    pointer;
 
-    box-shadow:
-        0 12px 28px
-        rgba(16,185,129,.25);
+  box-shadow:
+    0 12px 28px
+    rgba(
+      16,
+      185,
+      129,
+      .25
+    );
 }
 
 .playBtn:disabled {
+  background:
+    #2b3431;
 
-    background:
-        #2b3431;
+  color:
+    #72837d;
 
-    color:
-        #72837d;
+  box-shadow:
+    none;
 
-    box-shadow:
-        none;
+  cursor:
+    not-allowed;
+}
 
-    cursor:
-        not-allowed;
+.selectedCount {
+  font-size:
+    11px;
+
+  color:
+    var(--muted);
+
+  margin-top:
+    5px;
 }
 
 /* =========================================================
@@ -3053,461 +3595,470 @@ body {
 ========================================================= */
 
 .card {
+  width:
+    70px;
 
-    width:
-        70px;
+  height:
+    102px;
 
-    height:
-        102px;
+  border-radius:
+    10px;
 
-    border-radius:
-        10px;
+  padding:
+    6px;
 
-    padding:
-        6px;
+  display:
+    flex;
 
-    display:
-        flex;
+  flex-direction:
+    column;
 
-    flex-direction:
-        column;
+  justify-content:
+    space-between;
 
-    justify-content:
-        space-between;
+  font-weight:
+    900;
 
-    font-weight:
-        900;
+  background:
+    #fff;
 
-    background:
-        #fff;
+  box-shadow:
+    0 8px 22px
+    rgba(
+      0,
+      0,
+      0,
+      .38
+    );
 
-    box-shadow:
-        0 8px 22px
-        rgba(0,0,0,.38);
+  border:
+    1px solid
+    rgba(
+      0,
+      0,
+      0,
+      .18
+    );
 
-    border:
-        1px solid
-        rgba(0,0,0,.18);
+  user-select:
+    none;
 
-    user-select:
-        none;
-
-    touch-action:
-        none;
+  touch-action:
+    manipulation;
 }
 
 .cardTop,
 .cardBottom {
+  display:
+    flex;
 
-    display:
-        flex;
+  align-items:
+    center;
 
-    align-items:
-        center;
+  gap:
+    3px;
 
-    gap:
-        3px;
+  font-size:
+    13px;
 
-    font-size:
-        13px;
-
-    line-height:
-        1;
+  line-height:
+    1;
 }
 
 .cardCenter {
+  font-size:
+    34px;
 
-    font-size:
-        34px;
+  text-align:
+    center;
 
-    text-align:
-        center;
-
-    line-height:
-        1;
+  line-height:
+    1;
 }
 
 .cardBottom {
-
-    transform:
-        rotate(180deg);
+  transform:
+    rotate(180deg);
 }
 
-/* ♠ */
+/* ♠ BLACK */
 
 .suit-spades {
-
-    color:
-        #0a0a0a;
+  color:
+    #0a0a0a;
 }
 
-/* ♣ */
+/* ♣ EMERALD */
 
 .suit-clubs {
+  color:
+    #007a58;
 
-    color:
-        #007a58;
+  background:
 
-    background:
-        linear-gradient(
-            #fff,
-            #f0fbf6
-        );
+    linear-gradient(
+      #fff,
+      #f0fbf6
+    );
 }
 
-/* ♦ */
+/* ♦ NAVY */
 
 .suit-diamonds {
+  color:
+    #0a2a66;
 
-    color:
-        #0a2a66;
+  background:
 
-    background:
-        linear-gradient(
-            #fff,
-            #f1f5ff
-        );
+    linear-gradient(
+      #fff,
+      #f1f5ff
+    );
 }
 
-/* ♥ */
+/* ♥ BURGUNDY */
 
 .suit-hearts {
+  color:
+    #74152c;
 
-    color:
-        #74152c;
+  background:
 
-    background:
-        linear-gradient(
-            #fff,
-            #fff2f5
-        );
+    linear-gradient(
+      #fff,
+      #fff2f5
+    );
 }
 
 /* =========================================================
-   ANIMATIONS
+   SIDE PANELS
 ========================================================= */
 
-@keyframes cardFly {
+.scorePanel,
+.testerPanel,
+.quickPanel {
+  border-radius:
+    20px;
 
-    0% {
-
-        opacity:
-            0;
-
-        transform:
-            translateY(70px)
-            scale(.72)
-            rotate(-10deg);
-    }
-
-    60% {
-
-        opacity:
-            1;
-
-        transform:
-            translateY(-8px)
-            scale(1.06)
-            rotate(2deg);
-    }
-
-    100% {
-
-        transform:
-            translateY(0)
-            scale(1)
-            rotate(0);
-    }
-}
-
-.playGroup
-.card {
-
-    animation:
-        cardFly
-        .48s
-        cubic-bezier(
-            .2,
-            .8,
-            .2,
-            1
-        );
-}
-
-@keyframes pulseRing {
-
-    0%,
-    100% {
-
-        box-shadow:
-            0 0 0 0
-            rgba(233,196,106,.4);
-    }
-
-    50% {
-
-        box-shadow:
-            0 0 0 10px
-            rgba(233,196,106,0);
-    }
-}
-
-@keyframes turnTimer {
-
-    from {
-
-        width:
-            100%;
-    }
-
-    to {
-
-        width:
-            0%;
-    }
-}
-
-/* =========================================================
-   SCOREBOARD
-========================================================= */
-
-.scorePanel {
-
-    border-radius:
-        20px;
-
-    padding:
-        14px;
-
-    height:
-        fit-content;
-
-    position:
-        sticky;
-
-    top:
-        14px;
+  padding:
+    14px;
 }
 
 .scoreHead {
+  display:
+    flex;
 
-    display:
-        flex;
+  align-items:
+    center;
 
-    align-items:
-        center;
+  justify-content:
+    space-between;
 
-    justify-content:
-        space-between;
-
-    margin-bottom:
-        10px;
+  margin-bottom:
+    10px;
 }
 
 .scoreHead b {
-
-    font-size:
-        15px;
+  font-size:
+    15px;
 }
 
 .scoreHead span {
+  font-size:
+    10px;
 
-    font-size:
-        10px;
-
-    color:
-        var(--muted);
+  color:
+    var(--muted);
 }
 
 .scoreRow {
+  display:
+    grid;
 
-    display:
-        grid;
+  grid-template-columns:
+    42px
+    1fr
+    64px
+    64px;
 
-    grid-template-columns:
-        42px 1fr 64px 64px;
+  align-items:
+    center;
 
-    align-items:
-        center;
+  gap:
+    6px;
 
-    gap:
-        6px;
+  padding:
+    10px 6px;
 
-    padding:
-        10px 6px;
+  border-top:
+    1px solid
+    var(--line);
 
-    border-top:
-        1px solid
-        var(--line);
-
-    font-size:
-        10px;
+  font-size:
+    10px;
 }
 
-.scoreRow:first-child {
-
-    border-top:
-        0;
+.scoreRow .name {
+  font-weight:
+    700;
 }
 
-.scoreRow
-.name {
+.scoreRow .last {
+  text-align:
+    right;
 
-    font-weight:
-        700;
+  color:
+    #a9b9b2;
 }
 
-.scoreRow
-.last {
+.scoreRow .total {
+  text-align:
+    right;
 
-    color:
-        #a9b9b2;
+  color:
+    var(--gold2);
 
-    text-align:
-        right;
-}
+  font-weight:
+    800;
 
-.scoreRow
-.total {
-
-    text-align:
-        right;
-
-    color:
-        var(--gold2);
-
-    font-weight:
-        800;
-
-    font-size:
-        13px;
+  font-size:
+    13px;
 }
 
 .scoreRow.first {
+  background:
+    rgba(
+      233,
+      196,
+      106,
+      .07
+    );
 
-    background:
-        rgba(233,196,106,.06);
-
-    border-radius:
-        10px;
+  border-radius:
+    10px;
 }
 
-/* =========================================================
-   TESTER PANEL
-========================================================= */
-
 .testerPanel {
+  margin-top:
+    12px;
 
-    margin-top:
-        12px;
-
-    border-radius:
-        16px;
-
-    padding:
-        12px;
-
-    display:
-        none;
+  display:
+    none;
 }
 
 .testerPanel.show {
-
-    display:
-        block;
+  display:
+    block;
 }
 
 .testerGrid {
+  display:
+    grid;
 
-    display:
-        grid;
+  grid-template-columns:
+    1fr;
 
-    grid-template-columns:
-        1fr;
+  gap:
+    8px;
 
-    gap:
-        8px;
-
-    margin-top:
-        8px;
+  margin-top:
+    8px;
 }
 
 .testerHand {
+  padding:
+    8px;
 
-    padding:
-        8px;
+  border-radius:
+    10px;
 
-    border-radius:
-        10px;
+  background:
+    rgba(
+      255,
+      255,
+      255,
+      .04
+    );
 
-    background:
-        rgba(255,255,255,.04);
-
-    border:
-        1px solid
-        var(--line);
+  border:
+    1px solid
+    var(--line);
 }
 
 .mini {
+  display:
+    flex;
 
-    display:
-        flex;
+  gap:
+    4px;
 
-    gap:
-        4px;
+  flex-wrap:
+    wrap;
 
-    flex-wrap:
-        wrap;
-
-    margin-top:
-        5px;
+  margin-top:
+    5px;
 }
 
 .mini span {
+  padding:
+    3px 6px;
 
-    padding:
-        3px 6px;
+  border-radius:
+    6px;
 
-    border-radius:
-        6px;
+  background:
+    #edf4f0;
 
-    background:
-        #edf4f0;
+  color:
+    #142019;
 
-    color:
-        #142019;
+  font-size:
+    10px;
+}
 
-    font-size:
-        10px;
+.quickPanel {
+  margin-top:
+    12px;
+}
+
+.quickGrid {
+  display:
+    grid;
+
+  grid-template-columns:
+    1fr 1fr;
+
+  gap:
+    6px;
+}
+
+.quickBtn {
+  border:
+    1px solid
+    var(--line);
+
+  background:
+    rgba(
+      255,
+      255,
+      255,
+      .04
+    );
+
+  color:
+    #fff;
+
+  border-radius:
+    10px;
+
+  padding:
+    8px;
+
+  font-size:
+    10px;
+
+  cursor:
+    pointer;
+}
+
+.quickBtn:hover {
+  border-color:
+    rgba(
+      52,
+      211,
+      153,
+      .45
+    );
+
+  background:
+    rgba(
+      52,
+      211,
+      153,
+      .08
+    );
 }
 
 /* =========================================================
-   DRAG
+   ANIMATION
 ========================================================= */
 
-.dragGhost {
-
-    position:
-        fixed;
-
-    pointer-events:
-        none;
-
-    z-index:
-        9999;
+@keyframes cardFly {
+  0% {
+    opacity:
+      0;
 
     transform:
-        translate(-50%,-50%)
-        scale(1.05);
+      translateY(70px)
+      scale(.72)
+      rotate(-10deg);
+  }
 
-    filter:
-        drop-shadow(
-            0 14px 28px
-            rgba(0,0,0,.45)
-        );
-
+  60% {
     opacity:
-        .94;
+      1;
+
+    transform:
+      translateY(-8px)
+      scale(1.06)
+      rotate(2deg);
+  }
+
+  100% {
+    transform:
+      none;
+  }
+}
+
+.playGroup .card {
+  animation:
+    cardFly
+    .48s
+    cubic-bezier(
+      .2,
+      .8,
+      .2,
+      1
+    );
+}
+
+@keyframes bubble {
+  0% {
+    opacity:
+      0;
+
+    transform:
+      translate(
+        -50%,
+        8px
+      )
+      scale(.8);
+  }
+
+  15%,
+  80% {
+    opacity:
+      1;
+
+    transform:
+      translate(
+        -50%,
+        0
+      )
+      scale(1);
+  }
+
+  100% {
+    opacity:
+      0;
+
+    transform:
+      translate(
+        -50%,
+        -8px
+      )
+      scale(.95);
+  }
 }
 
 /* =========================================================
@@ -3515,292 +4066,254 @@ body {
 ========================================================= */
 
 @media(
-    max-width:1100px
+  max-width:1100px
 ) {
+  .layout {
+    grid-template-columns:
+      1fr;
+  }
 
-    .layout {
+  .tableStage {
+    height:
+      650px;
+  }
 
-        grid-template-columns:
-            1fr;
-    }
-
-    .scorePanel {
-
-        position:
-            static;
-    }
-
-    .tableStage {
-
-        height:
-            650px;
-    }
-
-    .testerGrid {
-
-        grid-template-columns:
-            repeat(2,1fr);
-    }
+  .testerGrid {
+    grid-template-columns:
+      repeat(
+        2,
+        1fr
+      );
+  }
 }
 
 @media(
-    max-width:800px
+  max-width:800px
 ) {
+  #lobby {
+    padding:
+      14px;
+  }
 
-    #lobby {
+  .hero {
+    grid-template-columns:
+      1fr;
+  }
 
-        padding:
-            14px;
-    }
+  .heroCard h1 {
+    font-size:
+      36px;
+  }
 
-    .hero {
+  .stakes {
+    grid-template-columns:
+      repeat(
+        3,
+        1fr
+      );
+  }
 
-        grid-template-columns:
-            1fr;
-    }
+  .gameTop {
+    grid-template-columns:
+      1fr;
+  }
 
-    .heroCard h1 {
+  .hud {
+    justify-content:
+      flex-start;
+  }
 
-        font-size:
-            36px;
-    }
+  .tableStage {
+    height:
+      590px;
+  }
 
-    .stakes {
+  .tableWood {
+    inset:
+      40px 25px 70px;
+  }
 
-        grid-template-columns:
-            repeat(3,1fr);
-    }
+  .felt {
+    inset:
+      78px 55px 115px;
+  }
 
-    .gameTop {
+  .seat {
+    width:
+      120px;
+  }
 
-        grid-template-columns:
-            1fr;
-    }
+  .avatar {
+    width:
+      44px;
 
-    .hud {
+    height:
+      44px;
+  }
 
-        justify-content:
-            flex-start;
-    }
+  .card {
+    width:
+      58px;
 
-    .tableStage {
+    height:
+      86px;
+  }
 
-        height:
-            590px;
-    }
+  .cardCenter {
+    font-size:
+      28px;
+  }
 
-    .tableWood {
+  .tableCards {
+    max-width:
+      72%;
+  }
 
-        inset:
-            40px 25px 70px;
-    }
-
-    .felt {
-
-        inset:
-            78px 55px 115px;
-    }
-
-    .seat {
-
-        width:
-            120px;
-    }
-
-    .avatar {
-
-        width:
-            44px;
-
-        height:
-            44px;
-    }
-
-    .card {
-
-        width:
-            58px;
-
-        height:
-            86px;
-    }
-
-    .cardCenter {
-
-        font-size:
-            28px;
-    }
-
-    .tableCards {
-
-        max-width:
-            72%;
-    }
-
-    .hand {
-
-        height:
-            118px;
-    }
+  .hand {
+    height:
+      118px;
+  }
 }
 
 @media(
-    max-width:520px
+  max-width:520px
 ) {
+  .heroCard,
+  .joinCard {
+    padding:
+      20px;
+  }
 
-    .heroCard,
-    .joinCard {
+  .heroCard h1 {
+    font-size:
+      30px;
+  }
 
-        padding:
-            20px;
-    }
+  .row2 {
+    grid-template-columns:
+      1fr;
+  }
 
-    .heroCard h1 {
+  .stakes {
+    grid-template-columns:
+      1fr 1fr;
+  }
 
-        font-size:
-            30px;
-    }
+  .tableStage {
+    height:
+      540px;
 
-    .row2 {
+    border-radius:
+      18px;
+  }
 
-        grid-template-columns:
-            1fr;
-    }
+  .tableWood {
+    inset:
+      32px 8px 66px;
+  }
 
-    .stakes {
+  .felt {
+    inset:
+      72px 28px 120px;
+  }
 
-        grid-template-columns:
-            1fr 1fr;
-    }
+  .seat {
+    width:
+      96px;
+  }
 
-    .tableStage {
+  .seatName {
+    font-size:
+      9px;
+  }
 
-        height:
-            540px;
+  .seatInfo {
+    font-size:
+      7px;
+  }
 
-        border-radius:
-            18px;
-    }
+  .avatar {
+    width:
+      38px;
 
-    .tableWood {
+    height:
+      38px;
+  }
 
-        inset:
-            32px 8px 66px;
-    }
+  .tableCards {
+    top:
+      54%;
 
-    .felt {
+    max-width:
+      78%;
 
-        inset:
-            72px 28px 120px;
-    }
+    gap:
+      5px;
+  }
 
-    .seat {
+  .card {
+    width:
+      50px;
 
-        width:
-            96px;
-    }
+    height:
+      74px;
 
-    .seatName {
+    padding:
+      4px;
+  }
 
-        font-size:
-            9px;
-    }
+  .cardCenter {
+    font-size:
+      22px;
+  }
 
-    .seatInfo {
+  .cardTop,
+  .cardBottom {
+    font-size:
+      10px;
+  }
 
-        font-size:
-            7px;
-    }
+  .handZone {
+    bottom:
+      8px;
+  }
 
-    .avatar {
+  .hand {
+    height:
+      100px;
+  }
 
-        width:
-            38px;
+  .hand .card {
+    margin-left:
+      -16px;
+  }
 
-        height:
-            38px;
-    }
+  .deckZone {
+    top:
+      43%;
 
-    .tableCards {
+    gap:
+      10px;
+  }
 
-        top:
-            54%;
+  .deckStack,
+  .trumpSlot {
+    width:
+      48px;
 
-        max-width:
-            78%;
+    height:
+      68px;
+  }
 
-        gap:
-            5px;
-    }
+  .testerGrid {
+    grid-template-columns:
+      1fr;
+  }
 
-    .card {
-
-        width:
-            50px;
-
-        height:
-            74px;
-
-        padding:
-            4px;
-    }
-
-    .cardCenter {
-
-        font-size:
-            22px;
-    }
-
-    .cardTop,
-    .cardBottom {
-
-        font-size:
-            10px;
-    }
-
-    .handZone {
-
-        bottom:
-            8px;
-    }
-
-    .hand {
-
-        height:
-            100px;
-    }
-
-    .hand
-    .card {
-
-        margin-left:
-            -16px;
-    }
-
-    .deckZone {
-
-        top:
-            43%;
-
-        gap:
-            10px;
-    }
-
-    .deckStack,
-    .trumpSlot {
-
-        width:
-            48px;
-
-        height:
-            68px;
-    }
-
-    .testerGrid {
-
-        grid-template-columns:
-            1fr;
-    }
+  .quickGrid {
+    grid-template-columns:
+      1fr;
+  }
 }
 
 </style>
@@ -3815,263 +4328,236 @@ body {
 
 <section id="lobby">
 
-    <div class="shell">
+  <div class="shell">
 
-        <div class="top">
+    <div class="top">
 
-            <div class="brand">
+      <div class="brand">
 
-                WRITTEN
+        WRITTEN
 
-                <span>
-                    BURA
-                </span>
+        <span>
+          BURA
+        </span>
 
-            </div>
+      </div>
 
-            <div class="testerHint">
+      <div class="testerHint">
 
-                TEST MODE:
+        TEST MODE:
 
-                <b>
-                    saba123
-                </b>
+        <b>
+          saba123
+        </b>
 
-                — პაროლი/რეგისტრაცია არ სჭირდება
+        — ბოტებით იწყება მაშინვე
 
-            </div>
-
-        </div>
-
-        <div class="hero">
-
-            <div class="heroCard glass">
-
-                <div class="eyebrow">
-                    LIVE CARD ROOM
-                </div>
-
-                <h1>
-                    კლასიკური ბურა თანამედროვე სათამაშო მაგიდაზე
-                </h1>
-
-                <p>
-
-                    შეიყვანე სახელი, აირჩიე 3 ან 4 მოთამაშე,
-                    1–4 პარტია და ფსონი.
-
-                    ჩვეულებრივი მოთამაშე დაელოდება სხვებს,
-                    ხოლო
-
-                    <b>
-                        saba123
-                    </b>
-
-                    TEST MODE-ში მაგიდა ავტომატურად შეივსება ბოტებით.
-
-                </p>
-
-                <div class="features">
-
-                    <span class="chip">
-                        36 კარტი
-                    </span>
-
-                    <span class="chip">
-                        3 / 4 მოთამაშე
-                    </span>
-
-                    <span class="chip">
-                        Live Score
-                    </span>
-
-                    <span class="chip">
-                        Drag & Drop
-                    </span>
-
-                    <span class="chip">
-                        SFX
-                    </span>
-
-                </div>
-
-            </div>
-
-            <div class="joinCard glass">
-
-                <h2>
-                    მაგიდაზე შესვლა
-                </h2>
-
-                <div class="field">
-
-                    <label>
-                        მოთამაშის სახელი
-                    </label>
-
-                    <input
-                        id="playerName"
-                        value="saba123"
-                        maxlength="20"
-                        autocomplete="off"
-                    >
-
-                </div>
-
-                <div class="row2">
-
-                    <div class="field">
-
-                        <label>
-                            მოთამაშეები
-                        </label>
-
-                        <select id="capacity">
-
-                            <option value="3">
-                                3 მოთამაშე
-                            </option>
-
-                            <option value="4">
-                                4 მოთამაშე
-                            </option>
-
-                        </select>
-
-                    </div>
-
-                    <div class="field">
-
-                        <label>
-                            პარტიები
-                        </label>
-
-                        <select id="parties">
-
-                            <option value="1">
-                                1 პარტია
-                            </option>
-
-                            <option value="2">
-                                2 პარტია
-                            </option>
-
-                            <option value="3">
-                                3 პარტია
-                            </option>
-
-                            <option value="4">
-                                4 პარტია
-                            </option>
-
-                        </select>
-
-                    </div>
-
-                </div>
-
-                <input
-                    type="hidden"
-                    id="stake"
-                    value="5"
-                >
-
-                <button
-                    class="primary"
-                    onclick="joinGame()"
-                >
-                    თამაშში შესვლა
-                </button>
-
-                <div
-                    id="wait"
-                    class="wait"
-                ></div>
-
-            </div>
-
-        </div>
-
-        <div class="stakes">
-
-            <button
-                class="stake active"
-                onclick="chooseStake(5,this)"
-            >
-
-                <b>
-                    $5
-                </b>
-
-                <span>
-                    CLASSIC
-                </span>
-
-            </button>
-
-            <button
-                class="stake"
-                onclick="chooseStake(10,this)"
-            >
-
-                <b>
-                    $10
-                </b>
-
-                <span>
-                    STANDARD
-                </span>
-
-            </button>
-
-            <button
-                class="stake"
-                onclick="chooseStake(25,this)"
-            >
-
-                <b>
-                    $25
-                </b>
-
-                <span>
-                    PREMIUM
-                </span>
-
-            </button>
-
-            <button
-                class="stake"
-                onclick="chooseStake(50,this)"
-            >
-
-                <b>
-                    $50
-                </b>
-
-                <span>
-                    VIP
-                </span>
-
-            </button>
-
-            <button
-                class="stake"
-                onclick="chooseStake(100,this)"
-            >
-
-                <b>
-                    $100
-                </b>
-
-                <span>
-                    ELITE
-                </span>
-
-            </button>
-
-        </div>
+      </div>
 
     </div>
+
+    <div class="hero">
+
+      <div class="heroCard glass">
+
+        <div class="eyebrow">
+          LIVE CARD ROOM
+        </div>
+
+        <h1>
+          წერითი ბურა — სწრაფი, მკაფიო და ცოცხალი
+        </h1>
+
+        <p>
+
+          აირჩიე 3 ან 4 მოთამაშე,
+          1–4 პარტია და ფსონი.
+
+          ერთ სვლაზე შეგიძლია მონიშნო
+          1, 2 ან 3 ერთი მასტის კარტი.
+
+          საპასუხო სვლაზე კარტების
+          რაოდენობა აუცილებლად უნდა
+          ემთხვეოდეს პირველ ჩამოსვლას.
+
+        </p>
+
+      </div>
+
+      <div class="joinCard glass">
+
+        <h2>
+          მაგიდაზე შესვლა
+        </h2>
+
+        <div class="field">
+
+          <label>
+            მოთამაშის სახელი
+          </label>
+
+          <input
+            id="playerName"
+            value="saba123"
+            maxlength="20"
+          >
+
+        </div>
+
+        <div class="row2">
+
+          <div class="field">
+
+            <label>
+              მოთამაშეები
+            </label>
+
+            <select id="capacity">
+
+              <option value="3">
+                3 მოთამაშე
+              </option>
+
+              <option value="4">
+                4 მოთამაშე
+              </option>
+
+            </select>
+
+          </div>
+
+          <div class="field">
+
+            <label>
+              პარტიები
+            </label>
+
+            <select id="parties">
+
+              <option value="1">
+                1 პარტია
+              </option>
+
+              <option value="2">
+                2 პარტია
+              </option>
+
+              <option value="3">
+                3 პარტია
+              </option>
+
+              <option value="4">
+                4 პარტია
+              </option>
+
+            </select>
+
+          </div>
+
+        </div>
+
+        <input
+          type="hidden"
+          id="stake"
+          value="5"
+        >
+
+        <button
+          class="primary"
+          onclick="joinGame()"
+        >
+          თამაშში შესვლა
+        </button>
+
+        <div
+          id="wait"
+          class="wait"
+        ></div>
+
+      </div>
+
+    </div>
+
+    <div class="stakes">
+
+      <button
+        class="stake active"
+        onclick="chooseStake(5,this)"
+      >
+
+        <b>
+          $5
+        </b>
+
+        <span>
+          CLASSIC
+        </span>
+
+      </button>
+
+      <button
+        class="stake"
+        onclick="chooseStake(10,this)"
+      >
+
+        <b>
+          $10
+        </b>
+
+        <span>
+          STANDARD
+        </span>
+
+      </button>
+
+      <button
+        class="stake"
+        onclick="chooseStake(25,this)"
+      >
+
+        <b>
+          $25
+        </b>
+
+        <span>
+          PREMIUM
+        </span>
+
+      </button>
+
+      <button
+        class="stake"
+        onclick="chooseStake(50,this)"
+      >
+
+        <b>
+          $50
+        </b>
+
+        <span>
+          VIP
+        </span>
+
+      </button>
+
+      <button
+        class="stake"
+        onclick="chooseStake(100,this)"
+      >
+
+        <b>
+          $100
+        </b>
+
+        <span>
+          ELITE
+        </span>
+
+      </button>
+
+    </div>
+
+  </div>
 
 </section>
 
@@ -4081,347 +4567,413 @@ body {
 
 <section id="game">
 
-    <div class="gameShell">
+  <div class="gameShell">
 
-        <div class="gameTop">
+    <div class="gameTop">
 
-            <div class="titleBlock glass">
+      <div class="titleBlock glass">
 
-                <b>
-                    WRITTEN BURA
-                </b>
+        <b>
+          WRITTEN BURA
+        </b>
 
-                <span id="tableSub">
-                    Live table
+        <span id="tableSub">
+          Live table
+        </span>
+
+      </div>
+
+      <div class="hud">
+
+        <div class="hudBox glass">
+
+          <small>
+            პარტია
+          </small>
+
+          <b id="hudParty">
+            -
+          </b>
+
+        </div>
+
+        <div class="hudBox glass">
+
+          <small>
+            ხელი
+          </small>
+
+          <b id="hudHand">
+            -
+          </b>
+
+        </div>
+
+        <div class="hudBox glass">
+
+          <small>
+            კოზირი
+          </small>
+
+          <b id="hudTrump">
+            -
+          </b>
+
+        </div>
+
+        <div class="hudBox glass">
+
+          <small>
+            დასტა
+          </small>
+
+          <b id="hudDeck">
+            -
+          </b>
+
+        </div>
+
+        <div class="hudBox glass">
+
+          <small>
+            ფსონი
+          </small>
+
+          <b id="hudStake">
+            -
+          </b>
+
+        </div>
+
+      </div>
+
+      <div>
+
+        <button
+          id="sfxBtn"
+          class="sfxBtn"
+          onclick="toggleSfx()"
+        >
+          🔊 SFX
+        </button>
+
+        <button
+          class="exitBtn"
+          onclick="location.reload()"
+        >
+          გასვლა
+        </button>
+
+      </div>
+
+    </div>
+
+    <div
+      id="status"
+      class="status"
+    ></div>
+
+    <div class="layout">
+
+      <div>
+
+        <div class="tableStage">
+
+          <div class="tableWood"></div>
+
+          <div class="felt"></div>
+
+          <div class="deckZone">
+
+            <div>
+
+              <div class="deckStack"></div>
+
+              <div class="deckLabel">
+
+                Deck
+
+                <span id="centerDeck">
+                  36
                 </span>
 
-            </div>
-
-            <div class="hud">
-
-                <div class="hudBox glass">
-
-                    <small>
-                        პარტია
-                    </small>
-
-                    <b id="hudParty">
-                        -
-                    </b>
-
-                </div>
-
-                <div class="hudBox glass">
-
-                    <small>
-                        ხელი
-                    </small>
-
-                    <b id="hudHand">
-                        -
-                    </b>
-
-                </div>
-
-                <div class="hudBox glass">
-
-                    <small>
-                        კოზირი
-                    </small>
-
-                    <b id="hudTrump">
-                        -
-                    </b>
-
-                </div>
-
-                <div class="hudBox glass">
-
-                    <small>
-                        დასტა
-                    </small>
-
-                    <b id="hudDeck">
-                        -
-                    </b>
-
-                </div>
-
-                <div class="hudBox glass">
-
-                    <small>
-                        ფსონი
-                    </small>
-
-                    <b id="hudStake">
-                        -
-                    </b>
-
-                </div>
+              </div>
 
             </div>
 
             <div>
 
-                <button
-                    id="sfxBtn"
-                    class="sfxBtn"
-                    onclick="toggleSfx()"
-                >
-                    🔊 SFX
-                </button>
+              <div
+                id="trumpSlot"
+                class="trumpSlot"
+              ></div>
 
-                <button
-                    class="exitBtn"
-                    onclick="location.reload()"
-                >
-                    გასვლა
-                </button>
+              <div class="deckLabel">
+                კოზირი
+              </div>
 
             </div>
+
+          </div>
+
+          <div id="players"></div>
+
+          <div
+            id="tableCards"
+            class="tableCards"
+          ></div>
+
+          <div class="handZone">
+
+            <div
+              id="myCards"
+              class="hand"
+            ></div>
+
+            <button
+              id="playBtn"
+              class="playBtn"
+              disabled
+              onclick="playSelected()"
+            >
+              სვლის გაკეთება
+            </button>
+
+            <div
+              id="selectedCount"
+              class="selectedCount"
+            >
+              არჩეული: 0 / 3
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+      <aside>
+
+        <div class="scorePanel glass">
+
+          <div class="scoreHead">
+
+            <b>
+              🏆 LIVE SCORE
+            </b>
+
+            <span>
+              ხელის ბოლოს განახლდება
+            </span>
+
+          </div>
+
+          <div id="score"></div>
+
+        </div>
+
+        <div class="quickPanel glass">
+
+          <b>
+            💬 სწრაფი რეაქციები
+          </b>
+
+          <div
+            class="quickGrid"
+            style="margin-top:8px"
+          >
+
+            <button
+              class="quickBtn"
+              onclick="sendQuick('👍 კარგი იყო')"
+            >
+              👍 კარგი იყო
+            </button>
+
+            <button
+              class="quickBtn"
+              onclick="sendQuick('⚡ სწრაფად')"
+            >
+              ⚡ სწრაფად
+            </button>
+
+            <button
+              class="quickBtn"
+              onclick="sendQuick('😂 ჰაჰა')"
+            >
+              😂 ჰაჰა
+            </button>
+
+            <button
+              class="quickBtn"
+              onclick="sendQuick('🔥 მაგარია')"
+            >
+              🔥 მაგარია
+            </button>
+
+            <button
+              class="quickBtn"
+              onclick="sendQuick('👏 ბრავო')"
+            >
+              👏 ბრავო
+            </button>
+
+            <button
+              class="quickBtn"
+              onclick="sendQuick('🤝 წარმატებები')"
+            >
+              🤝 წარმატებები
+            </button>
+
+          </div>
 
         </div>
 
         <div
-            id="status"
-            class="status"
-        ></div>
+          id="testerPanel"
+          class="testerPanel glass"
+        >
 
-        <div class="layout">
+          <b>
+            🧪 TEST MODE — ყველა მოთამაშის კარტი
+          </b>
 
-            <div>
-
-                <div class="tableStage">
-
-                    <div class="tableWood"></div>
-
-                    <div class="felt"></div>
-
-                    <div class="deckZone">
-
-                        <div>
-
-                            <div class="deckStack"></div>
-
-                            <div class="deckLabel">
-
-                                Deck
-
-                                <span id="centerDeck">
-                                    36
-                                </span>
-
-                            </div>
-
-                        </div>
-
-                        <div>
-
-                            <div
-                                id="trumpSlot"
-                                class="trumpSlot"
-                            ></div>
-
-                            <div class="deckLabel">
-                                კოზირი
-                            </div>
-
-                        </div>
-
-                    </div>
-
-                    <div id="players"></div>
-
-                    <div
-                        id="tableCards"
-                        class="tableCards"
-                    ></div>
-
-                    <div class="handZone">
-
-                        <div
-                            id="myCards"
-                            class="hand"
-                        ></div>
-
-                        <button
-                            id="playBtn"
-                            class="playBtn"
-                            disabled
-                            onclick="playSelected()"
-                        >
-                            სვლის გაკეთება
-                        </button>
-
-                    </div>
-
-                </div>
-
-            </div>
-
-            <aside>
-
-                <div class="scorePanel glass">
-
-                    <div class="scoreHead">
-
-                        <b>
-                            🏆 LIVE SCORE
-                        </b>
-
-                        <span>
-                            ხელის ბოლოს განახლდება
-                        </span>
-
-                    </div>
-
-                    <div id="score"></div>
-
-                </div>
-
-                <div
-                    id="testerPanel"
-                    class="testerPanel glass"
-                >
-
-                    <b>
-                        🧪 TEST MODE — ყველა მოთამაშის კარტი
-                    </b>
-
-                    <div
-                        id="testerGrid"
-                        class="testerGrid"
-                    ></div>
-
-                </div>
-
-            </aside>
+          <div
+            id="testerGrid"
+            class="testerGrid"
+          ></div>
 
         </div>
 
+      </aside>
+
     </div>
+
+  </div>
 
 </section>
 
 <script>
 
+/* =========================================================
+   CLIENT
+========================================================= */
+
 const socket =
-    io();
+  io();
 
 let current =
-    null;
+  null;
 
 let selected =
-    [];
+  [];
 
 let sfxEnabled =
-    true;
+  true;
 
-let dragIndex =
-    null;
+let lastTableCount =
+  0;
 
-let dragGhost =
-    null;
+let timerRAF =
+  null;
 
 /* =========================================================
-   LOBBY
+   STAKE
 ========================================================= */
 
 function chooseStake(
-    value,
-    element
+  value,
+  element
 ) {
+  document
+    .getElementById(
+      'stake'
+    )
+    .value =
+      value;
 
-    document
-        .getElementById(
-            'stake'
-        )
-        .value =
-            value;
-
-    document
-        .querySelectorAll(
-            '.stake'
-        )
-        .forEach(
-            item =>
-                item
-                    .classList
-                    .remove(
-                        'active'
-                    )
-        );
-
-    element
-        .classList
-        .add(
+  document
+    .querySelectorAll(
+      '.stake'
+    )
+    .forEach(
+      item =>
+        item
+          .classList
+          .remove(
             'active'
-        );
+          )
+    );
+
+  element
+    .classList
+    .add(
+      'active'
+    );
 }
 
-function joinGame() {
+/* =========================================================
+   JOIN
+========================================================= */
 
-    const name =
+function joinGame() {
+  const name =
+    document
+      .getElementById(
+        'playerName'
+      )
+      .value
+      .trim();
+
+  if (
+    !name
+  ) {
+    return alert(
+      'შეიყვანე მოთამაშის სახელი'
+    );
+  }
+
+  document
+    .getElementById(
+      'wait'
+    )
+    .textContent =
+      name.toLowerCase() ===
+      'saba123'
+        ?
+        'TEST მაგიდა მზადდება...'
+        :
+        'ვეძებთ მოთამაშეებს...';
+
+  socket.emit(
+    'joinTable',
+    {
+      name,
+
+      capacity:
         document
+          .getElementById(
+            'capacity'
+          )
+          .value,
+
+      parties:
+        document
+          .getElementById(
+            'parties'
+          )
+          .value,
+
+      stake:
+        Number(
+          document
             .getElementById(
-                'playerName'
+              'stake'
             )
             .value
-            .trim();
-
-    if (
-        !name
-    ) {
-
-        alert(
-            'შეიყვანე მოთამაშის სახელი'
-        );
-
-        return;
-    }
-
-    document
-        .getElementById(
-            'wait'
         )
-        .textContent =
-            name.toLowerCase() ===
-            'saba123'
-                ?
-                'TEST მაგიდა მზადდება...'
-                :
-                'ვეძებთ მოთამაშეებს...';
-
-    socket.emit(
-        'joinTable',
-        {
-
-            name,
-
-            capacity:
-                document
-                    .getElementById(
-                        'capacity'
-                    )
-                    .value,
-
-            parties:
-                document
-                    .getElementById(
-                        'parties'
-                    )
-                    .value,
-
-            stake:
-                Number(
-                    document
-                        .getElementById(
-                            'stake'
-                        )
-                        .value
-                )
-        }
-    );
+    }
+  );
 }
 
 /* =========================================================
@@ -4429,1389 +4981,1437 @@ function joinGame() {
 ========================================================= */
 
 socket.on(
-    'waitingForPlayers',
-    data => {
-
-        document
-            .getElementById(
-                'wait'
-            )
-            .textContent =
-                'ველოდებით მოთამაშეებს: '
-                +
-                data.current
-                +
-                ' / '
-                +
-                data.max;
-    }
+  'waitingForPlayers',
+  data => {
+    document
+      .getElementById(
+        'wait'
+      )
+      .textContent =
+        'ველოდებით მოთამაშეებს: '
+        +
+        data.current
+        +
+        ' / '
+        +
+        data.max;
+  }
 );
 
 socket.on(
-    'errorMessage',
-    message => {
+  'errorMessage',
+  message => {
+    alert(
+      message
+    );
 
-        alert(
-            message
+    const status =
+      document
+        .getElementById(
+          'status'
         );
 
-        const status =
-            document
-                .getElementById(
-                    'status'
-                );
-
-        if (
-            status
-        ) {
-
-            status.textContent =
-                message;
-        }
+    if (
+      status
+    ) {
+      status.textContent =
+        message;
     }
+  }
 );
 
 socket.on(
-    'gameStateUpdate',
-    state => {
+  'gameStateUpdate',
+  state => {
+    const previousCount =
+      current
+        ?
+        current.table.length
+        :
+        0;
 
-        current =
-            state;
+    current =
+      state;
 
-        selected =
-            [];
+    selected =
+      [];
 
-        document
-            .getElementById(
-                'lobby'
-            )
-            .style
-            .display =
-                'none';
+    document
+      .getElementById(
+        'lobby'
+      )
+      .style
+      .display =
+        'none';
 
-        document
-            .getElementById(
-                'game'
-            )
-            .style
-            .display =
-                'block';
+    document
+      .getElementById(
+        'game'
+      )
+      .style
+      .display =
+        'block';
 
-        render(
-            state
-        );
+    render(
+      state
+    );
 
-        if (
-            state.processing
-        ) {
-
-            playSfx(
-                'take'
-            );
-        }
+    if (
+      state.table.length >
+      previousCount
+    ) {
+      playSfx(
+        'play'
+      );
     }
+
+    lastTableCount =
+      state.table.length;
+  }
+);
+
+socket.on(
+  'sfxEvent',
+  event => {
+    playSfx(
+      event &&
+      event.type
+    );
+  }
+);
+
+socket.on(
+  'quickMessage',
+  message => {
+    showReaction(
+      message
+    );
+  }
 );
 
 /* =========================================================
    HELPERS
 ========================================================= */
 
-function suitSymbol(
-    suit
-) {
+function suitSymbol(suit) {
+  return (
+    {
+      spades:
+        '♠',
 
-    return {
+      clubs:
+        '♣',
 
-        spades:
-            '♠',
+      diamonds:
+        '♦',
 
-        clubs:
-            '♣',
-
-        diamonds:
-            '♦',
-
-        hearts:
-            '♥'
-
+      hearts:
+        '♥'
     }[
-        suit
+      suit
     ] ||
-    '';
+    ''
+  );
 }
 
-function trumpText(
-    trump
-) {
-
-    return (
-        trump ===
-        'no_trump'
-            ?
-            'უკოზირო'
-            :
-            suitSymbol(
-                trump
-            )
-    );
+function trumpText(trump) {
+  return (
+    trump ===
+    'no_trump'
+      ?
+      'უკოზირო'
+      :
+      suitSymbol(
+        trump
+      )
+  );
 }
 
-function escapeHtml(
-    value
-) {
-
-    return String(
-        value == null
-            ?
-            ''
-            :
-            value
+function esc(value) {
+  return String(
+    value == null
+      ?
+      ''
+      :
+      value
+  )
+    .replace(
+      /&/g,
+      '&amp;'
     )
-        .replace(
-            /&/g,
-            '&amp;'
-        )
-        .replace(
-            /</g,
-            '&lt;'
-        )
-        .replace(
-            />/g,
-            '&gt;'
-        )
-        .replace(
-            /"/g,
-            '&quot;'
-        )
-        .replace(
-            /'/g,
-            '&#039;'
-        );
+    .replace(
+      /</g,
+      '&lt;'
+    )
+    .replace(
+      />/g,
+      '&gt;'
+    )
+    .replace(
+      /"/g,
+      '&quot;'
+    )
+    .replace(
+      /'/g,
+      '&#039;'
+    );
 }
 
 /* =========================================================
    CARD
 ========================================================= */
 
-function cardElement(
-    card
-) {
+function cardEl(card) {
+  const element =
+    document
+      .createElement(
+        'div'
+      );
 
-    const element =
-        document
-            .createElement(
-                'div'
-            );
+  element.className =
+    'card suit-'
+    +
+    card.suit;
 
-    element.className =
-        'card suit-'
-        +
-        card.suit;
+  const symbol =
+    suitSymbol(
+      card.suit
+    );
 
-    const symbol =
-        suitSymbol(
-            card.suit
-        );
+  element.innerHTML =
+    '<div class="cardTop">'
+    +
+    '<span>'
+    +
+    esc(
+      card.rank
+    )
+    +
+    '</span>'
+    +
+    '<span>'
+    +
+    symbol
+    +
+    '</span>'
+    +
+    '</div>'
+    +
+    '<div class="cardCenter">'
+    +
+    symbol
+    +
+    '</div>'
+    +
+    '<div class="cardBottom">'
+    +
+    '<span>'
+    +
+    esc(
+      card.rank
+    )
+    +
+    '</span>'
+    +
+    '<span>'
+    +
+    symbol
+    +
+    '</span>'
+    +
+    '</div>';
 
-    element.innerHTML =
-        '<div class="cardTop">'
-        +
-        '<span>'
-        +
-        escapeHtml(
-            card.rank
-        )
-        +
-        '</span>'
-        +
-        '<span>'
-        +
-        symbol
-        +
-        '</span>'
-        +
-        '</div>'
-        +
-        '<div class="cardCenter">'
-        +
-        symbol
-        +
-        '</div>'
-        +
-        '<div class="cardBottom">'
-        +
-        '<span>'
-        +
-        escapeHtml(
-            card.rank
-        )
-        +
-        '</span>'
-        +
-        '<span>'
-        +
-        symbol
-        +
-        '</span>'
-        +
-        '</div>';
-
-    return element;
+  return element;
 }
 
 /* =========================================================
    RENDER
 ========================================================= */
 
-function render(
-    state
-) {
+function render(state) {
+  document
+    .getElementById(
+      'tableSub'
+    )
+    .textContent =
+      state.capacity
+      +
+      ' players · $'
+      +
+      state.stake
+      +
+      ' table';
 
-    document
-        .getElementById(
-            'tableSub'
-        )
-        .textContent =
-            state.capacity
-            +
-            ' players · $'
-            +
-            state.stake
-            +
-            ' table';
+  document
+    .getElementById(
+      'hudParty'
+    )
+    .textContent =
+      state.partyIndex
+      +
+      ' / '
+      +
+      state.parties;
 
-    document
-        .getElementById(
-            'hudParty'
-        )
-        .textContent =
-            state.partyIndex
-            +
-            ' / '
-            +
-            state.parties;
+  document
+    .getElementById(
+      'hudHand'
+    )
+    .textContent =
+      state.handIndex
+      +
+      ' / '
+      +
+      state.totalHands;
 
-    document
-        .getElementById(
-            'hudHand'
-        )
-        .textContent =
-            state.handIndex
-            +
-            ' / '
-            +
-            state.totalHands;
-
-    document
-        .getElementById(
-            'hudTrump'
-        )
-        .textContent =
-            trumpText(
-                state.trump
-            );
-
-    document
-        .getElementById(
-            'hudDeck'
-        )
-        .textContent =
-            state.deckCount;
-
-    document
-        .getElementById(
-            'centerDeck'
-        )
-        .textContent =
-            state.deckCount;
-
-    document
-        .getElementById(
-            'hudStake'
-        )
-        .textContent =
-            '$'
-            +
-            state.stake;
-
-    renderTrump(
+  document
+    .getElementById(
+      'hudTrump'
+    )
+    .textContent =
+      trumpText(
         state.trump
-    );
+      );
 
-    renderPlayers(
-        state
-    );
+  document
+    .getElementById(
+      'hudDeck'
+    )
+    .textContent =
+      state.deckCount;
 
-    renderTable(
-        state
-    );
+  document
+    .getElementById(
+      'centerDeck'
+    )
+    .textContent =
+      state.deckCount;
 
-    renderHand(
-        state
-    );
+  document
+    .getElementById(
+      'hudStake'
+    )
+    .textContent =
+      '$'
+      +
+      state.stake;
 
-    renderScore(
-        state
-    );
+  renderTrump(
+    state.trump
+  );
 
-    renderTester(
-        state
-    );
+  renderPlayers(
+    state
+  );
 
-    updateStatus(
-        state
-    );
+  renderTable(
+    state
+  );
+
+  renderHand(
+    state
+  );
+
+  renderScore(
+    state
+  );
+
+  renderTester(
+    state
+  );
+
+  updateStatus(
+    state
+  );
+
+  startTimerLoop();
 }
 
 /* =========================================================
    TRUMP
 ========================================================= */
 
-function renderTrump(
-    trump
-) {
+function renderTrump(trump) {
+  const slot =
+    document
+      .getElementById(
+        'trumpSlot'
+      );
 
-    const slot =
-        document
-            .getElementById(
-                'trumpSlot'
-            );
+  slot.innerHTML =
+    '';
 
-    slot.innerHTML =
-        '';
-
-    if (
-        trump ===
-        'no_trump'
-    ) {
-
-        const element =
-            document
-                .createElement(
-                    'div'
-                );
-
-        element.className =
-            'card';
-
-        element.style.cssText =
-            'display:grid;place-items:center;color:#333;font-size:26px';
-
-        element.textContent =
-            'Ø';
-
-        slot.appendChild(
-            element
+  if (
+    trump ===
+    'no_trump'
+  ) {
+    const element =
+      document
+        .createElement(
+          'div'
         );
 
-        return;
-    }
+    element.className =
+      'card';
+
+    element.style.cssText =
+      'display:grid;place-items:center;color:#333;font-size:26px';
+
+    element.textContent =
+      'Ø';
 
     slot.appendChild(
-        cardElement({
-            rank:
-                'K',
-
-            suit:
-                trump
-        })
+      element
     );
+
+    return;
+  }
+
+  slot.appendChild(
+    cardEl({
+      rank:
+        'K',
+
+      suit:
+        trump
+    })
+  );
 }
 
 /* =========================================================
-   PLAYER POSITION
+   PLAYER POSITIONS
 ========================================================= */
 
 function seatPosition(
-    index,
-    count,
-    myId,
-    players
+  index,
+  count,
+  myId,
+  players
 ) {
+  let myIndex =
+    players.findIndex(
+      player =>
+        player.id ===
+        myId
+    );
 
-    let myIndex =
-        players.findIndex(
-            player =>
-                player.id ===
-                myId
-        );
+  if (
+    myIndex < 0
+  ) {
+    myIndex =
+      0;
+  }
 
-    if (
-        myIndex <
-        0
-    ) {
+  const relative =
+    (
+      index -
+      myIndex +
+      count
+    ) %
+    count;
 
-        myIndex =
-            0;
+  const positions3 = [
+    {
+      l: 50,
+      t: 84
+    },
+    {
+      l: 18,
+      t: 28
+    },
+    {
+      l: 82,
+      t: 28
     }
+  ];
 
-    const relative =
-        (
-            index -
-            myIndex +
-            count
-        )
-        %
-        count;
+  const positions4 = [
+    {
+      l: 50,
+      t: 84
+    },
+    {
+      l: 14,
+      t: 50
+    },
+    {
+      l: 50,
+      t: 16
+    },
+    {
+      l: 86,
+      t: 50
+    }
+  ];
 
-    const positions3 = [
-
-        {
-            left:
-                50,
-
-            top:
-                83
-        },
-
-        {
-            left:
-                18,
-
-            top:
-                28
-        },
-
-        {
-            left:
-                82,
-
-            top:
-                28
-        }
-    ];
-
-    const positions4 = [
-
-        {
-            left:
-                50,
-
-            top:
-                83
-        },
-
-        {
-            left:
-                14,
-
-            top:
-                50
-        },
-
-        {
-            left:
-                50,
-
-            top:
-                16
-        },
-
-        {
-            left:
-                86,
-
-            top:
-                50
-        }
-    ];
-
-    return (
-        count ===
-        4
-            ?
-            positions4
-            :
-            positions3
-    )[
-        relative
-    ];
+  return (
+    count === 4
+      ?
+      positions4
+      :
+      positions3
+  )[
+    relative
+  ];
 }
 
 /* =========================================================
    PLAYERS
 ========================================================= */
 
-function renderPlayers(
-    state
-) {
+function renderPlayers(state) {
+  const root =
+    document
+      .getElementById(
+        'players'
+      );
 
-    const root =
+  root.innerHTML =
+    '';
+
+  state.players.forEach(
+    (
+      player,
+      index
+    ) => {
+      const position =
+        seatPosition(
+          index,
+          state.players.length,
+          state.viewingPlayerId,
+          state.players
+        );
+
+      const element =
         document
-            .getElementById(
-                'players'
-            );
+          .createElement(
+            'div'
+          );
 
-    root.innerHTML =
+      element.className =
+        'seat'
+        +
+        (
+          player.isCurrent
+            ?
+            ' current'
+            :
+            ''
+        );
+
+      element.dataset.playerId =
+        player.id;
+
+      element.style.left =
+        position.l
+        +
+        '%';
+
+      element.style.top =
+        position.t
+        +
+        '%';
+
+      let backs =
         '';
 
-    state.players.forEach(
-        (
-            player,
-            index
-        ) => {
-
-            const position =
-                seatPosition(
-                    index,
-                    state.players.length,
-                    state.viewingPlayerId,
-                    state.players
-                );
-
-            const element =
-                document
-                    .createElement(
-                        'div'
-                    );
-
-            element.className =
-                'seat'
-                +
-                (
-                    player.isCurrent
-                        ?
-                        ' current'
-                        :
-                        ''
-                );
-
-            element.style.left =
-                position.left
-                +
-                '%';
-
-            element.style.top =
-                position.top
-                +
-                '%';
-
-            let backs =
-                '';
-
-            if (
-                player.id !==
-                state.viewingPlayerId
-            ) {
-
-                for (
-                    let i =
-                        0;
-
-                    i <
-                    player.cardCount;
-
-                    i++
-                ) {
-
-                    backs +=
-                        '<div class="back"></div>';
-                }
-            }
-
-            element.innerHTML =
-                '<div class="seatBox">'
-                +
-                '<div class="avatar"></div>'
-                +
-                '<div class="seatName">'
-                +
-                escapeHtml(
-                    player.name
-                )
-                +
-                (
-                    player.isBot
-                        ?
-                        ' 🤖'
-                        :
-                        ''
-                )
-                +
-                '</div>'
-                +
-                '<div class="seatInfo">'
-                +
-                '💰 '
-                +
-                player.balance
-                +
-                ' · hand '
-                +
-                player.handPoints
-                +
-                ' · total '
-                +
-                player.totalPoints
-                +
-                '</div>'
-                +
-                '<div class="backs">'
-                +
-                backs
-                +
-                '</div>'
-                +
-                '<div class="turnBar"></div>'
-                +
-                '</div>';
-
-            root.appendChild(
-                element
-            );
+      if (
+        player.id !==
+        state.viewingPlayerId
+      ) {
+        for (
+          let i = 0;
+          i <
+          player.cardCount;
+          i++
+        ) {
+          backs +=
+            '<div class="back"></div>';
         }
-    );
+      }
+
+      element.innerHTML =
+        '<div class="seatBox">'
+        +
+        '<div class="avatar" onclick="openAvatarQuick(\\''
+        +
+        player.id
+        +
+        '\\')">'
+        +
+        '<div class="timerRing"></div>'
+        +
+        '</div>'
+        +
+        '<div class="seatName">'
+        +
+        esc(
+          player.name
+        )
+        +
+        (
+          player.isBot
+            ?
+            ' 🤖'
+            :
+            ''
+        )
+        +
+        '</div>'
+        +
+        '<div class="seatInfo">'
+        +
+        '💰 '
+        +
+        player.balance
+        +
+        ' · hand '
+        +
+        player.handPoints
+        +
+        ' · total '
+        +
+        player.totalPoints
+        +
+        '</div>'
+        +
+        '<div class="backs">'
+        +
+        backs
+        +
+        '</div>'
+        +
+        '</div>';
+
+      root.appendChild(
+        element
+      );
+    }
+  );
 }
 
 /* =========================================================
    TABLE CARDS
 ========================================================= */
 
-function renderTable(
-    state
-) {
+function renderTable(state) {
+  const root =
+    document
+      .getElementById(
+        'tableCards'
+      );
 
-    const root =
+  root.innerHTML =
+    '';
+
+  state.table.forEach(
+    play => {
+      const group =
         document
-            .getElementById(
-                'tableCards'
-            );
+          .createElement(
+            'div'
+          );
 
-    root.innerHTML =
-        '';
+      group.className =
+        'playGroup'
+        +
+        (
+          play.isWinning
+            ?
+            ' winner'
+            :
+            ''
+        );
 
-    state.table.forEach(
-        play => {
+      const name =
+        document
+          .createElement(
+            'div'
+          );
 
-            const group =
-                document
-                    .createElement(
-                        'div'
-                    );
+      name.className =
+        'playName';
 
-            group.className =
-                'playGroup'
-                +
-                (
-                    play.isWinning
-                        ?
-                        ' winner'
-                        :
-                        ''
-                );
+      name.textContent =
+        play.playerName;
 
-            const name =
-                document
-                    .createElement(
-                        'div'
-                    );
+      group.appendChild(
+        name
+      );
 
-            name.className =
-                'playName';
-
-            name.textContent =
-                play.playerName;
-
-            group.appendChild(
-                name
-            );
-
-            play.cards.forEach(
-                card => {
-
-                    group.appendChild(
-                        cardElement(
-                            card
-                        )
-                    );
-                }
-            );
-
-            root.appendChild(
-                group
-            );
+      play.cards.forEach(
+        card => {
+          group.appendChild(
+            cardEl(
+              card
+            )
+          );
         }
-    );
+      );
+
+      root.appendChild(
+        group
+      );
+    }
+  );
 }
 
 /* =========================================================
-   HAND
+   MY HAND
 ========================================================= */
 
-function renderHand(
-    state
-) {
+function renderHand(state) {
+  const root =
+    document
+      .getElementById(
+        'myCards'
+      );
 
-    const root =
-        document
-            .getElementById(
-                'myCards'
-            );
+  root.innerHTML =
+    '';
 
-    root.innerHTML =
-        '';
+  const cards =
+    state.playersCards[
+      state.viewingPlayerId
+    ] ||
+    [];
 
-    const cards =
-        state.playersCards[
-            state.viewingPlayerId
-        ]
-        ||
-        [];
+  const middle =
+    (
+      cards.length -
+      1
+    ) /
+    2;
 
-    const middle =
+  cards.forEach(
+    (
+      card,
+      index
+    ) => {
+      const element =
+        cardEl(
+          card
+        );
+
+      const delta =
+        index -
+        middle;
+
+      element.style.transform =
+        'rotate('
+        +
         (
-            cards.length -
-            1
+          delta *
+          3.5
         )
-        /
-        2;
-
-    cards.forEach(
+        +
+        'deg) translateY('
+        +
         (
-            card,
-            index
-        ) => {
+          Math.abs(
+            delta
+          ) *
+          1.7
+        )
+        +
+        'px)';
 
-            const element =
-                cardElement(
-                    card
-                );
+      element.onclick =
+        () =>
+          toggleCard(
+            index,
+            element
+          );
 
-            const delta =
-                index -
-                middle;
+      root.appendChild(
+        element
+      );
+    }
+  );
 
-            element.style.transform =
-                'rotate('
-                +
-                (
-                    delta *
-                    3.5
-                )
-                +
-                'deg) translateY('
-                +
-                (
-                    Math.abs(
-                        delta
-                    )
-                    *
-                    1.7
-                )
-                +
-                'px)';
+  updatePlayButton(
+    state
+  );
 
-            element.addEventListener(
-                'click',
-                () => {
-
-                    toggleCard(
-                        index,
-                        element
-                    );
-                }
-            );
-
-            element.addEventListener(
-                'pointerdown',
-                event => {
-
-                    startDrag(
-                        event,
-                        index,
-                        element
-                    );
-                }
-            );
-
-            root.appendChild(
-                element
-            );
-        }
-    );
-
-    updatePlayButton(
-        state
-    );
+  updateSelectedCount();
 }
 
 /* =========================================================
-   SELECT
+   MULTI SELECT
 ========================================================= */
 
 function toggleCard(
-    index,
-    element
+  index,
+  element
 ) {
+  const selectedIndex =
+    selected.indexOf(
+      index
+    );
 
-    const found =
-        selected.indexOf(
-            index
-        );
+  if (
+    selectedIndex >=
+    0
+  ) {
+    selected.splice(
+      selectedIndex,
+      1
+    );
 
+    element
+      .classList
+      .remove(
+        'selected'
+      );
+  } else {
     if (
-        found >=
-        0
+      selected.length >=
+      3
     ) {
-
-        selected.splice(
-            found,
-            1
-        );
-
-        element
-            .classList
-            .remove(
-                'selected'
-            );
-
-    } else {
-
-        selected.push(
-            index
-        );
-
-        element
-            .classList
-            .add(
-                'selected'
-            );
+      return;
     }
 
-    updatePlayButton(
-        current
+    selected.push(
+      index
     );
+
+    element
+      .classList
+      .add(
+        'selected'
+      );
+  }
+
+  playSfx(
+    'select'
+  );
+
+  updatePlayButton(
+    current
+  );
+
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  document
+    .getElementById(
+      'selectedCount'
+    )
+    .textContent =
+      'არჩეული: '
+      +
+      selected.length
+      +
+      ' / 3';
 }
 
 /* =========================================================
-   PLAY
+   CLIENT VALIDATION
 ========================================================= */
 
-function updatePlayButton(
+function selectionValidClient() {
+  if (
+    !current
+    ||
+    !selected.length
+  ) {
+    return false;
+  }
+
+  const cards =
+    current.playersCards[
+      current.viewingPlayerId
+    ] ||
+    [];
+
+  const chosen =
+    selected
+      .map(
+        index =>
+          cards[index]
+      )
+      .filter(
+        Boolean
+      );
+
+  if (
+    !chosen.length
+    ||
+    chosen.length >
+    3
+  ) {
+    return false;
+  }
+
+  const sameSuit =
+    chosen.every(
+      card =>
+        card.suit ===
+        chosen[0].suit
+    );
+
+  /*
+    პირველი სვლა
+  */
+
+  if (
+    current.table.length ===
+    0
+  ) {
+    return sameSuit;
+  }
+
+  /*
+    საპასუხო სვლა
+  */
+
+  const required =
+    current.table[
+      0
+    ].cards.length;
+
+  if (
+    chosen.length !==
+    required
+  ) {
+    return false;
+  }
+
+  const canSame =
+    [
+      'spades',
+      'clubs',
+      'diamonds',
+      'hearts'
+    ].some(
+      suit =>
+        cards.filter(
+          card =>
+            card.suit ===
+            suit
+        ).length >=
+        required
+    );
+
+  return canSame
+    ?
+    sameSuit
+    :
+    true;
+}
+
+/* =========================================================
+   PLAY BUTTON
+========================================================= */
+
+function updatePlayButton(state) {
+  const button =
+    document
+      .getElementById(
+        'playBtn'
+      );
+
+  const active =
     state
-) {
+      ?
+      state.players[
+        state.currentTurnIndex
+      ]
+      :
+      null;
 
-    const button =
-        document
-            .getElementById(
-                'playBtn'
-            );
-
-    const active =
-        state
-            ?
-            state.players[
-                state.currentTurnIndex
-            ]
-            :
-            null;
-
-    button.disabled =
-        !state
-        ||
-        !active
-        ||
-        active.id !==
-        state.viewingPlayerId
-        ||
-        selected.length ===
-        0
-        ||
-        state.processing
-        ||
-        state.gameOver;
+  button.disabled =
+    !state
+    ||
+    !active
+    ||
+    active.id !==
+      state.viewingPlayerId
+    ||
+    !selectionValidClient()
+    ||
+    state.processing
+    ||
+    state.gameOver;
 }
 
 function playSelected() {
+  if (
+    !selectionValidClient()
+  ) {
+    return alert(
+      'პირველი ჩამოსვლისას აირჩიე 1-3 ერთი მასტის კარტი; პასუხზე რაოდენობა უნდა ემთხვეოდეს პირველ ჩამოსვლას.'
+    );
+  }
 
-    if (
-        !selected.length
-    ) {
-
-        return;
+  socket.emit(
+    'playCards',
+    {
+      cardIndices:
+        selected.slice()
     }
+  );
 
-    playSfx(
-        'play'
-    );
+  selected =
+    [];
 
-    socket.emit(
-        'playCards',
-        {
-
-            cardIndices:
-                selected.slice()
-        }
-    );
-
-    selected =
-        [];
+  updateSelectedCount();
 }
 
 /* =========================================================
    STATUS
 ========================================================= */
 
-function updateStatus(
-    state
-) {
+function updateStatus(state) {
+  const element =
+    document
+      .getElementById(
+        'status'
+      );
 
-    const element =
-        document
-            .getElementById(
-                'status'
-            );
+  if (
+    state.gameOver
+  ) {
+    element.textContent =
+      '🏆 თამაში დასრულებულია';
 
-    if (
-        state.gameOver
-    ) {
+    return;
+  }
 
-        element.textContent =
-            '🏆 თამაში დასრულებულია';
+  if (
+    state.processing
+  ) {
+    element.textContent =
+      '✨ კარტები ითვლება...';
 
-        playSfx(
-            'win'
-        );
+    return;
+  }
 
-        return;
-    }
+  const player =
+    state.players[
+      state.currentTurnIndex
+    ];
 
-    if (
-        state.processing
-    ) {
+  if (
+    !player
+  ) {
+    return;
+  }
 
-        element.textContent =
-            '✨ კარტები ითვლება...';
-
-        return;
-    }
-
-    const player =
-        state.players[
-            state.currentTurnIndex
-        ];
-
-    if (
-        !player
-    ) {
-
-        return;
-    }
-
-    if (
-        player.id ===
-        state.viewingPlayerId
-    ) {
-
-        element.textContent =
-            '🎯 შენი სვლაა';
-
-    } else if (
-        player.isBot
-    ) {
-
-        element.textContent =
-            '🤖 '
-            +
-            player.name
-            +
-            ' თამაშობს...';
-
-    } else {
-
-        element.textContent =
-            player.name
-            +
-            '-ის სვლაა';
-    }
+  if (
+    player.id ===
+    state.viewingPlayerId
+  ) {
+    element.textContent =
+      '🎯 შენი სვლაა';
+  } else if (
+    player.isBot
+  ) {
+    element.textContent =
+      '🤖 '
+      +
+      player.name
+      +
+      ' თამაშობს...';
+  } else {
+    element.textContent =
+      player.name
+      +
+      '-ის სვლაა';
+  }
 }
 
 /* =========================================================
    SCORE
 ========================================================= */
 
-function renderScore(
-    state
-) {
+function renderScore(state) {
+  const root =
+    document
+      .getElementById(
+        'score'
+      );
 
-    const root =
-        document
-            .getElementById(
-                'score'
-            );
+  const last =
+    state.lastHandScores ||
+    {};
 
-    const last =
-        state.lastHandScores ||
-        {};
-
-    const players =
-        state.players
-            .slice()
-            .sort(
-                (
-                    a,
-                    b
-                ) =>
-                    (
-                        b.totalPoints ||
-                        0
-                    )
-                    -
-                    (
-                        a.totalPoints ||
-                        0
-                    )
-            );
-
-    let html =
-        '';
-
-    players.forEach(
+  const players =
+    state.players
+      .slice()
+      .sort(
         (
-            player,
-            index
-        ) => {
+          a,
+          b
+        ) =>
+          (
+            b.totalPoints ||
+            0
+          )
+          -
+          (
+            a.totalPoints ||
+            0
+          )
+      );
 
-            const place =
-                index === 0
-                    ?
-                    '🥇'
-                    :
-                    (
-                        index === 1
-                            ?
-                            '🥈'
-                            :
-                            (
-                                index === 2
-                                    ?
-                                    '🥉'
-                                    :
-                                    '#' +
-                                    (
-                                        index +
-                                        1
-                                    )
-                            )
-                    );
+  let html =
+    '';
 
-            const lastScore =
-                typeof last[
-                    player.id
-                ] ===
-                'number'
-                    ?
-                    last[
-                        player.id
-                    ]
-                    :
-                    '-';
+  players.forEach(
+    (
+      player,
+      index
+    ) => {
+      const place =
+        index === 0
+          ?
+          '🥇'
+          :
+          index === 1
+            ?
+            '🥈'
+            :
+            index === 2
+              ?
+              '🥉'
+              :
+              '#'
+              +
+              (
+                index + 1
+              );
 
-            html +=
-                '<div class="scoreRow '
-                +
-                (
-                    index ===
-                    0
-                        ?
-                        'first'
-                        :
-                        ''
-                )
-                +
-                '">'
-                +
-                '<div>'
-                +
-                place
-                +
-                '</div>'
-                +
-                '<div class="name">'
-                +
-                escapeHtml(
-                    player.name
-                )
-                +
-                (
-                    player.id ===
-                    state.viewingPlayerId
-                        ?
-                        ' · YOU'
-                        :
-                        ''
-                )
-                +
-                '</div>'
-                +
-                '<div class="last">'
-                +
-                lastScore
-                +
-                '</div>'
-                +
-                '<div class="total">'
-                +
-                player.totalPoints
-                +
-                '</div>'
-                +
-                '</div>';
-        }
-    );
+      const lastScore =
+        typeof last[
+          player.id
+        ] ===
+        'number'
+          ?
+          last[
+            player.id
+          ]
+          :
+          '-';
 
-    root.innerHTML =
-        html;
+      html +=
+        '<div class="scoreRow '
+        +
+        (
+          index === 0
+            ?
+            'first'
+            :
+            ''
+        )
+        +
+        '">'
+        +
+        '<div>'
+        +
+        place
+        +
+        '</div>'
+        +
+        '<div class="name">'
+        +
+        esc(
+          player.name
+        )
+        +
+        (
+          player.id ===
+          state.viewingPlayerId
+            ?
+            ' · YOU'
+            :
+            ''
+        )
+        +
+        '</div>'
+        +
+        '<div class="last">'
+        +
+        lastScore
+        +
+        '</div>'
+        +
+        '<div class="total">'
+        +
+        player.totalPoints
+        +
+        '</div>'
+        +
+        '</div>';
+    }
+  );
+
+  root.innerHTML =
+    html;
 }
 
 /* =========================================================
-   TESTER
+   TESTER VIEW
 ========================================================= */
 
-function renderTester(
-    state
-) {
+function renderTester(state) {
+  const panel =
+    document
+      .getElementById(
+        'testerPanel'
+      );
 
-    const panel =
-        document
-            .getElementById(
-                'testerPanel'
-            );
+  const grid =
+    document
+      .getElementById(
+        'testerGrid'
+      );
 
-    const grid =
-        document
-            .getElementById(
-                'testerGrid'
-            );
-
-    if (
-        !state.revealAll
-    ) {
-
-        panel
-            .classList
-            .remove(
-                'show'
-            );
-
-        grid.innerHTML =
-            '';
-
-        return;
-    }
-
+  if (
+    !state.revealAll
+  ) {
     panel
-        .classList
-        .add(
-            'show'
-        );
-
-    let html =
-        '';
-
-    state.players.forEach(
-        player => {
-
-            const cards =
-                state.playersCards[
-                    player.id
-                ] ||
-                [];
-
-            html +=
-                '<div class="testerHand">'
-                +
-                '<b>'
-                +
-                escapeHtml(
-                    player.name
-                )
-                +
-                '</b>'
-                +
-                '<div class="mini">';
-
-            cards.forEach(
-                card => {
-
-                    html +=
-                        '<span>'
-                        +
-                        escapeHtml(
-                            card.rank
-                        )
-                        +
-                        suitSymbol(
-                            card.suit
-                        )
-                        +
-                        '</span>';
-                }
-            );
-
-            html +=
-                '</div>'
-                +
-                '</div>';
-        }
-    );
+      .classList
+      .remove(
+        'show'
+      );
 
     grid.innerHTML =
-        html;
+      '';
+
+    return;
+  }
+
+  panel
+    .classList
+    .add(
+      'show'
+    );
+
+  let html =
+    '';
+
+  state.players.forEach(
+    player => {
+      const cards =
+        state.playersCards[
+          player.id
+        ] ||
+        [];
+
+      html +=
+        '<div class="testerHand">'
+        +
+        '<b>'
+        +
+        esc(
+          player.name
+        )
+        +
+        '</b>'
+        +
+        '<div class="mini">'
+        +
+        cards
+          .map(
+            card =>
+              '<span>'
+              +
+              esc(
+                card.rank
+              )
+              +
+              suitSymbol(
+                card.suit
+              )
+              +
+              '</span>'
+          )
+          .join('')
+        +
+        '</div>'
+        +
+        '</div>';
+    }
+  );
+
+  grid.innerHTML =
+    html;
 }
 
 /* =========================================================
-   DRAG & DROP
+   TIMER DISPLAY
 ========================================================= */
 
-function startDrag(
-    event,
-    index,
-    source
-) {
+function startTimerLoop() {
+  cancelAnimationFrame(
+    timerRAF
+  );
 
-    if (
-        event.pointerType ===
-        'mouse'
-        &&
-        event.button !==
-        0
-    ) {
-
+  const tick =
+    () => {
+      if (
+        !current
+      ) {
         return;
+      }
+
+      const now =
+        Date.now();
+
+      const remain =
+        Math.max(
+          0,
+          current.turnEndsAt -
+          now
+        );
+
+      const percent =
+        Math.max(
+          0,
+          Math.min(
+            100,
+            remain /
+            (
+              current.turnSeconds *
+              1000
+            )
+            *
+            100
+          )
+        );
+
+      document
+        .querySelectorAll(
+          '.seat'
+        )
+        .forEach(
+          seat => {
+            const ring =
+              seat.querySelector(
+                '.timerRing'
+              );
+
+            if (
+              ring
+            ) {
+              ring.style.setProperty(
+                '--turn',
+                seat
+                  .classList
+                  .contains(
+                    'current'
+                  )
+                  ?
+                  percent +
+                  '%'
+                  :
+                  '0%'
+              );
+            }
+          }
+        );
+
+      timerRAF =
+        requestAnimationFrame(
+          tick
+        );
+    };
+
+  tick();
+}
+
+/* =========================================================
+   QUICK REACTIONS
+========================================================= */
+
+function sendQuick(text) {
+  socket.emit(
+    'quickMessage',
+    {
+      text
     }
+  );
+}
 
-    dragIndex =
-        index;
+function openAvatarQuick(
+  playerId
+) {
+  const player =
+    current
+    &&
+    current.players.find(
+      item =>
+        item.id ===
+        playerId
+    );
 
-    dragGhost =
-        source.cloneNode(
-            true
-        );
+  if (
+    !player
+  ) {
+    return;
+  }
 
-    dragGhost
-        .classList
-        .add(
-            'dragGhost'
-        );
+  sendQuick(
+    '👍 კარგი იყო'
+  );
+}
 
-    dragGhost.style.left =
-        event.clientX
-        +
-        'px';
+function showReaction(message) {
+  if (
+    !message
+  ) {
+    return;
+  }
 
-    dragGhost.style.top =
-        event.clientY
-        +
-        'px';
+  const seat =
+    document.querySelector(
+      '.seat[data-player-id="'
+      +
+      CSS.escape(
+        message.playerId
+      )
+      +
+      '"] .seatBox'
+    );
 
-    document.body
-        .appendChild(
-            dragGhost
-        );
+  if (
+    !seat
+  ) {
+    return;
+  }
 
-    const move =
-        e => {
+  seat
+    .querySelectorAll(
+      '.reactionBubble'
+    )
+    .forEach(
+      item =>
+        item.remove()
+    );
 
-            if (
-                dragGhost
-            ) {
-
-                dragGhost.style.left =
-                    e.clientX
-                    +
-                    'px';
-
-                dragGhost.style.top =
-                    e.clientY
-                    +
-                    'px';
-            }
-        };
-
-    const up =
-        e => {
-
-            document
-                .removeEventListener(
-                    'pointermove',
-                    move
-                );
-
-            document
-                .removeEventListener(
-                    'pointerup',
-                    up
-                );
-
-            if (
-                dragGhost
-            ) {
-
-                dragGhost.remove();
-
-                dragGhost =
-                    null;
-            }
-
-            const felt =
-                document
-                    .querySelector(
-                        '.felt'
-                    )
-                    .getBoundingClientRect();
-
-            const inside =
-                e.clientX >=
-                felt.left
-                &&
-                e.clientX <=
-                felt.right
-                &&
-                e.clientY >=
-                felt.top
-                &&
-                e.clientY <=
-                felt.bottom;
-
-            if (
-                inside
-            ) {
-
-                if (
-                    !selected.includes(
-                        dragIndex
-                    )
-                ) {
-
-                    selected =
-                        [
-                            dragIndex
-                        ];
-                }
-
-                playSelected();
-            }
-
-            dragIndex =
-                null;
-        };
-
+  const bubble =
     document
-        .addEventListener(
-            'pointermove',
-            move
-        );
+      .createElement(
+        'div'
+      );
 
-    document
-        .addEventListener(
-            'pointerup',
-            up,
-            {
-                once:
-                    true
-            }
-        );
+  bubble.className =
+    'reactionBubble';
+
+  bubble.textContent =
+    message.text;
+
+  seat.appendChild(
+    bubble
+  );
+
+  setTimeout(
+    () =>
+      bubble.remove(),
+    2500
+  );
 }
 
 /* =========================================================
@@ -5819,137 +6419,145 @@ function startDrag(
 ========================================================= */
 
 function toggleSfx() {
+  sfxEnabled =
+    !sfxEnabled;
 
-    sfxEnabled =
-        !sfxEnabled;
-
-    document
-        .getElementById(
-            'sfxBtn'
-        )
-        .textContent =
-            sfxEnabled
-                ?
-                '🔊 SFX'
-                :
-                '🔇 SFX';
+  document
+    .getElementById(
+      'sfxBtn'
+    )
+    .textContent =
+      sfxEnabled
+        ?
+        '🔊 SFX'
+        :
+        '🔇 SFX';
 }
 
-function playSfx(
-    type
-) {
+function playSfx(type) {
+  if (
+    !sfxEnabled
+  ) {
+    return;
+  }
+
+  try {
+    const AudioContextClass =
+      window.AudioContext
+      ||
+      window.webkitAudioContext;
+
+    const context =
+      new AudioContextClass();
+
+    const oscillator =
+      context
+        .createOscillator();
+
+    const gain =
+      context
+        .createGain();
+
+    oscillator.connect(
+      gain
+    );
+
+    gain.connect(
+      context.destination
+    );
+
+    let frequency =
+      440;
+
+    let duration =
+      .05;
 
     if (
-        !sfxEnabled
+      type ===
+      'select'
     ) {
+      frequency =
+        620;
 
-        return;
+      duration =
+        .035;
+    } else if (
+      type ===
+      'play'
+    ) {
+      frequency =
+        500;
+
+      duration =
+        .06;
+    } else if (
+      type ===
+      'cut'
+    ) {
+      frequency =
+        320;
+
+      duration =
+        .08;
+    } else if (
+      type ===
+      'deal'
+    ) {
+      frequency =
+        700;
+
+      duration =
+        .05;
+    } else if (
+      type ===
+      'win'
+    ) {
+      frequency =
+        820;
+
+      duration =
+        .18;
     }
 
-    try {
+    oscillator
+      .frequency
+      .value =
+        frequency;
 
-        const AudioContextClass =
-            window.AudioContext
-            ||
-            window.webkitAudioContext;
+    gain
+      .gain
+      .setValueAtTime(
+        .03,
+        context.currentTime
+      );
 
-        const context =
-            new AudioContextClass();
+    gain
+      .gain
+      .exponentialRampToValueAtTime(
+        .001,
+        context.currentTime +
+        duration
+      );
 
-        const oscillator =
-            context
-                .createOscillator();
+    oscillator.start();
 
-        const gain =
-            context
-                .createGain();
-
-        oscillator.connect(
-            gain
-        );
-
-        gain.connect(
-            context.destination
-        );
-
-        let frequency =
-            420;
-
-        let duration =
-            .06;
-
-        if (
-            type ===
-            'play'
-        ) {
-
-            frequency =
-                520;
-
-            duration =
-                .05;
-
-        } else if (
-            type ===
-            'take'
-        ) {
-
-            frequency =
-                280;
-
-            duration =
-                .08;
-
-        } else if (
-            type ===
-            'win'
-        ) {
-
-            frequency =
-                760;
-
-            duration =
-                .16;
-        }
-
-        oscillator
-            .frequency
-            .value =
-                frequency;
-
-        gain.gain
-            .setValueAtTime(
-                .035,
-                context.currentTime
-            );
-
-        gain.gain
-            .exponentialRampToValueAtTime(
-                .001,
-                context.currentTime
-                +
-                duration
-            );
-
-        oscillator.start();
-
-        oscillator.stop(
-            context.currentTime
-            +
-            duration
-        );
-
-    } catch (
-        error
-    ) {
-        // ignore unsupported audio
-    }
+    oscillator.stop(
+      context.currentTime +
+      duration
+    );
+  } catch (
+    error
+  ) {
+    /*
+      თუ ბრაუზერს WebAudio
+      არ აქვს, უბრალოდ ხმა არ იქნება.
+    */
+  }
 }
 
 </script>
 
 </body>
-
 </html>
 `;
 
@@ -5958,63 +6566,70 @@ function playSfx(
 ========================================================= */
 
 app.get(
-    '/',
-    (
-        req,
-        res
-    ) => {
-
-        res
-            .type(
-                'html'
-            )
-            .send(
-                PAGE
-            );
-    }
+  '/',
+  (
+    req,
+    res
+  ) => {
+    res
+      .type(
+        'html'
+      )
+      .send(
+        PAGE
+      );
+  }
 );
 
 app.get(
-    '/health',
-    (
-        req,
-        res
-    ) => {
+  '/health',
+  (
+    req,
+    res
+  ) => {
+    res.json({
+      ok:
+        true,
 
-        res.json({
-            ok:
-                true,
+      cards:
+        createDeck()
+          .length,
 
-            cards:
-                createDeck().length,
+      tester:
+        TESTER_NAME,
 
-            tester:
-                TESTER_NAME
-        });
-    }
+      turnSeconds:
+        TURN_SECONDS
+    });
+  }
 );
 
 /* =========================================================
-   START SERVER
+   START
 ========================================================= */
 
 server.listen(
-    PORT,
-    () => {
+  PORT,
+  () => {
+    console.log(
+      'WRITTEN BURA running on port',
+      PORT
+    );
 
-        console.log(
-            'WRITTEN BURA running on port',
-            PORT
-        );
+    console.log(
+      'Deck:',
+      createDeck().length
+    );
 
-        console.log(
-            'Deck:',
-            createDeck().length
-        );
+    console.log(
+      'Tester:',
+      TESTER_NAME
+    );
 
-        console.log(
-            'Tester:',
-            TESTER_NAME
-        );
-    }
+    console.log(
+      'Turn timer:',
+      TURN_SECONDS,
+      'seconds'
+    );
+  }
 );
