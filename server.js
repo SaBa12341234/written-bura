@@ -1,2774 +1,2560 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const express=require('express'),http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto');
+const {Server}=require('socket.io');
+const app=express(),server=http.createServer(app),io=new Server(server,{maxHttpBufferSize:2*1024*1024});
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+const PORT=process.env.PORT||10000,TESTER='saba123',TURN=20,START=1000,USERFILE=path.join(__dirname,'users.json');
+const VALUES={'6':0,'7':0,'8':0,'9':0,J:2,Q:3,K:4,'10':10,A:11},RANKS=['6','7','8','9','J','Q','K','10','A'],SUITS=['spades','clubs','diamonds','hearts'],TRUMPS=['spades','clubs','diamonds','hearts','no_trump'],AVATARS=['🦊','🐺','🦁','🐯','🐻','🦅','🐼','🐸','🐵','😎','🤠','🧙'],AUDIO=['სიქიიიიიმ!','ყვერო, მალე!','რას შვრები, ძმაო?!','ვაჰ, კოზირი!'];
+const rooms=new Map(),tournamentRegs=new Map();
 
-const PORT = process.env.PORT || 10000;
+let users=(()=>{
+  try{
+    return fs.existsSync(USERFILE)
+      ?JSON.parse(fs.readFileSync(USERFILE,'utf8'))||{}
+      :{};
+  }catch{
+    return{};
+  }
+})();
 
-const TESTER_NAME = 'saba123';
-const START_BALANCE = 1000;
-const TURN_SECONDS = 20;
-
-const CAPACITIES = [3, 4];
-const STAKES = [5, 10, 25, 50, 100];
-const MAX_PARTIES = 4;
-
-const CARD_VALUES = {
-  '6': 0,
-  '7': 0,
-  '8': 0,
-  '9': 0,
-  'J': 2,
-  'Q': 3,
-  'K': 4,
-  '10': 10,
-  'A': 11
+const save=()=>{
+  try{
+    fs.writeFileSync(
+      USERFILE,
+      JSON.stringify(users,null,2)
+    );
+  }catch(e){
+    console.error(e.message);
+  }
 };
 
-const RANKS = [
-  '6',
-  '7',
-  '8',
-  '9',
-  'J',
-  'Q',
-  'K',
-  '10',
-  'A'
-];
+const clean=v=>String(v||'')
+  .trim()
+  .replace(/\s+/g,' ')
+  .slice(0,20);
 
-const SUITS = [
-  'spades',
-  'clubs',
-  'diamonds',
-  'hearts'
-];
+const key=v=>clean(v).toLowerCase();
 
-const TRUMPS = [
-  'spades',
-  'clubs',
-  'diamonds',
-  'hearts',
-  'no_trump'
-];
-
-const rooms = new Map();
-
-/* =========================================================
-   GENERAL HELPERS
-========================================================= */
-
-function cleanName(value) {
-  return String(value || '')
-    .trim()
-    .slice(0, 20);
-}
-
-function isTesterName(value) {
-  return (
-    cleanName(value).toLowerCase() ===
-    TESTER_NAME
+const id=p=>
+  p+'_'+
+  Date.now()+
+  '_'+
+  Math.floor(
+    Math.random()*1e9
   );
-}
 
-function makeId(prefix) {
-  return (
-    prefix +
-    '_' +
-    Date.now() +
-    '_' +
-    Math.floor(Math.random() * 1000000)
-  );
-}
+const ri=c=>
+  RANKS.indexOf(c.rank);
 
-function rankIndex(card) {
-  return RANKS.indexOf(card.rank);
-}
+const tr=(c,t)=>
+  t!=='no_trump'&&
+  c.suit===t;
 
-function isTrump(card, trump) {
-  return (
-    trump !== 'no_trump' &&
-    card.suit === trump
-  );
-}
-
-function cardPoints(cards) {
-  return (cards || []).reduce(
-    function (sum, card) {
-      return sum + card.value;
-    },
+const pts=a=>
+  (a||[]).reduce(
+    (s,c)=>s+(c.value||0),
     0
   );
-}
 
-function allSameSuit(cards) {
-  if (!cards.length) {
-    return false;
+const same=a=>
+  !!a.length&&
+  a.every(
+    c=>c.suit===a[0].suit
+  );
+
+const mali=a=>
+  a.length===5&&
+  same(a);
+
+const today=()=>
+  new Date()
+    .toISOString()
+    .slice(0,10);
+
+const level=x=>
+  Math.max(
+    1,
+    Math.floor(
+      (x||0)/250
+    )+1
+  );
+
+const frame=w=>
+  w>=25
+    ?'diamond'
+    :w>=8
+      ?'gold'
+      :'bronze';
+
+const quests=()=>({
+  date:today(),
+  wins:0,
+  maliutka:0,
+  tables:0,
+  cw:false,
+  cm:false,
+  ct:false
+});
+
+function shape(u){
+  if(!u)return null;
+
+  if(!Number.isFinite(u.xp))
+    u.xp=0;
+
+  if(!Number.isFinite(u.wins))
+    u.wins=0;
+
+  if(!Number.isFinite(u.games))
+    u.games=0;
+
+  if(!Number.isFinite(u.balance))
+    u.balance=START;
+
+  if(!u.avatar)
+    u.avatar=AVATARS[0];
+
+  if(!Array.isArray(u.achievements))
+    u.achievements=[];
+
+  if(
+    !u.quests||
+    u.quests.date!==today()
+  ){
+    u.quests=quests();
   }
 
-  return cards.every(
-    function (card) {
-      return card.suit === cards[0].suit;
+  u.level=level(u.xp);
+  u.frame=frame(u.wins);
+
+  return u;
+}
+
+const profile=u=>{
+  shape(u);
+
+  return{
+    username:u.username,
+    avatar:u.avatar,
+    xp:u.xp,
+    level:u.level,
+    wins:u.wins,
+    games:u.games,
+    balance:u.balance,
+    frame:u.frame,
+    quests:u.quests,
+    achievements:u.achievements
+  };
+};
+
+const salt=()=>
+  crypto.randomBytes(16)
+    .toString('hex');
+
+const hash=(p,s)=>
+  crypto.scryptSync(
+    String(p),
+    s,
+    64
+  ).toString('hex');
+
+function safeAvatar(a){
+  a=String(a||'');
+
+  if(AVATARS.includes(a))
+    return a;
+
+  if(
+    /^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/
+      .test(a)
+    &&
+    a.length<700000
+  ){
+    return a;
+  }
+
+  return AVATARS[0];
+}
+
+function pushProfile(k){
+  if(!users[k])
+    return;
+
+  for(
+    const s of
+    io.sockets.sockets.values()
+  ){
+    if(s.userKey===k){
+      s.emit(
+        'profileUpdate',
+        profile(users[k])
+      );
     }
-  );
+  }
 }
 
-function isMaliutka(cards) {
-  return (
-    cards.length === 5 &&
-    allSameSuit(cards)
-  );
+function xp(k,n){
+  if(!users[k])
+    return;
+
+  shape(users[k]);
+
+  users[k].xp+=n;
+
+  save();
+
+  pushProfile(k);
 }
 
-/* =========================================================
-   DECK
-========================================================= */
+function quest(k,f,n=1){
+  if(!users[k])
+    return;
 
-function createDeck() {
-  const deck = [];
+  let u=shape(users[k]);
 
-  for (const suit of SUITS) {
-    for (const rank of RANKS) {
-      deck.push({
-        suit: suit,
-        rank: rank,
-        value: CARD_VALUES[rank]
+  u.quests[f]=
+    (u.quests[f]||0)+n;
+
+  let b=0;
+
+  if(
+    u.quests.wins>=3&&
+    !u.quests.cw
+  ){
+    u.quests.cw=true;
+    b+=100;
+  }
+
+  if(
+    u.quests.maliutka>=1&&
+    !u.quests.cm
+  ){
+    u.quests.cm=true;
+    b+=250;
+  }
+
+  if(
+    u.quests.tables>=5&&
+    !u.quests.ct
+  ){
+    u.quests.ct=true;
+    b+=50;
+  }
+
+  u.xp+=b;
+
+  save();
+
+  pushProfile(k);
+}
+
+function achievement(
+  room,
+  p,
+  k,
+  title
+){
+  if(!p)
+    return;
+
+  if(
+    p.userKey&&
+    users[p.userKey]
+  ){
+    let u=
+      shape(
+        users[p.userKey]
+      );
+
+    if(
+      u.achievements
+        .includes(k)
+    ){
+      return;
+    }
+
+    u.achievements.push(k);
+    u.xp+=50;
+
+    save();
+
+    pushProfile(
+      p.userKey
+    );
+  }else{
+    p.achievements=
+      p.achievements||[];
+
+    if(
+      p.achievements
+        .includes(k)
+    ){
+      return;
+    }
+
+    p.achievements
+      .push(k);
+  }
+
+  io.to(room.id)
+    .emit(
+      'achievement',
+      {
+        playerName:p.name,
+        title
+      }
+    );
+}
+
+function deck(){
+  let d=[];
+
+  for(const s of SUITS){
+    for(const r of RANKS){
+      d.push({
+        suit:s,
+        rank:r,
+        value:VALUES[r]
       });
     }
   }
 
-  for (
-    let i = deck.length - 1;
-    i > 0;
+  for(
+    let i=d.length-1;
+    i;
     i--
-  ) {
-    const j = Math.floor(
-      Math.random() * (i + 1)
-    );
+  ){
+    let j=
+      Math.floor(
+        Math.random()*
+        (i+1)
+      );
 
-    const temp = deck[i];
-    deck[i] = deck[j];
-    deck[j] = temp;
+    [
+      d[i],
+      d[j]
+    ]=[
+      d[j],
+      d[i]
+    ];
   }
 
-  return deck;
+  return d;
 }
 
-/* =========================================================
-   PLAYER STATS
-========================================================= */
-
-function createStats() {
-  return {
-    xp: 0,
-    level: 1,
-    wins: 0,
-    streak: 0,
-    achievements: []
-  };
-}
-
-function recalcLevel(player) {
-  player.stats.level =
-    Math.max(
-      1,
-      Math.floor(player.stats.xp / 100) + 1
-    );
-}
-
-function playerFrame(player) {
-  const wins =
-    player.stats.wins || 0;
-
-  if (wins >= 10) {
-    return 'diamond';
-  }
-
-  if (wins >= 3) {
-    return 'gold';
-  }
-
-  return 'bronze';
-}
-
-function awardAchievement(
-  room,
-  player,
-  key,
-  title
-) {
-  if (
-    !player ||
-    !player.stats
-  ) {
-    return;
-  }
-
-  if (
-    player.stats.achievements.includes(key)
-  ) {
-    return;
-  }
-
-  player.stats.achievements.push(key);
-
-  player.stats.xp += 40;
-
-  recalcLevel(player);
-
-  io.to(room.id).emit(
-    'achievement',
-    {
-      playerId: player.id,
-      playerName: player.name,
-      key: key,
-      title: title
-    }
+function roomList(){
+  return[
+    ...rooms.values()
+  ]
+  .filter(
+    r=>
+      !r.game&&
+      r.players.length<
+      r.capacity
+  )
+  .map(
+    r=>({
+      id:r.id,
+      name:r.name,
+      stake:r.stake,
+      capacity:r.capacity,
+      players:r.players.length,
+      parties:r.parties
+    })
   );
 }
 
-/* =========================================================
-   ROOM
-========================================================= */
+function emitRooms(){
+  io.emit(
+    'lobbyTables',
+    roomList()
+  );
+}
 
-function createRoom(
+function newRoom(
   capacity,
   parties,
-  stake
-) {
-  const room = {
-    id: makeId('room'),
+  stake,
+  owner,
+  name
+){
+  let r={
+    id:id('room'),
 
-    capacity: capacity,
+    name:
+      clean(name)||
+      owner+' Table',
 
-    parties: parties,
+    capacity,
+    parties,
+    stake,
 
-    stake: stake,
+    players:[],
 
-    players: [],
+    game:null,
 
-    game: null,
-
-    timer: null
+    timer:null
   };
 
   rooms.set(
-    room.id,
-    room
+    r.id,
+    r
   );
 
-  return room;
+  emitRooms();
+
+  return r;
 }
 
-/* =========================================================
-   START HAND
-========================================================= */
-
-function startHand(
+function newHand(
   room,
-  previous
-) {
-  const deck =
-    createDeck();
+  prev
+){
+  let d=deck(),
+      hands={},
+      taken={},
+      totals={};
 
-  const hands = {};
-  const taken = {};
-  const totals = {};
-
-  for (
-    const player of
+  for(
+    const p of
     room.players
-  ) {
-    hands[player.id] =
-      deck.splice(0, 5);
+  ){
+    hands[p.id]=
+      d.splice(0,5);
 
-    taken[player.id] =
-      [];
+    taken[p.id]=[];
 
-    totals[player.id] =
-      previous
-        ? (
-          previous.totals[player.id] ||
+    totals[p.id]=
+      prev
+        ?(
+          prev.totals[p.id]||
           0
         )
-        : 0;
+        :0;
   }
 
-  const handIndex =
-    previous
-      ? previous.handIndex + 1
-      : 1;
+  let h=
+    prev
+      ?prev.handIndex+1
+      :1;
 
-  /*
-    პირველი ხელი იწყება პირველი
-    შემოსული მოთამაშით: index 0.
-
-    შემდეგ ხელებზე გამოიყენება
-    previous.nextLeaderIndex.
-  */
-
-  const leaderIndex =
-    previous &&
+  let leader=
+    prev&&
     Number.isInteger(
-      previous.nextLeaderIndex
+      prev.nextLeaderIndex
     )
-      ? previous.nextLeaderIndex
-      : 0;
+      ?prev.nextLeaderIndex
+      :0;
 
-  return {
-    deck: deck,
+  return{
+    deck:d,
 
-    hands: hands,
+    hands,
 
-    taken: taken,
+    taken,
 
-    totals: totals,
+    totals,
 
-    table: [],
+    table:[],
 
-    handIndex: handIndex,
+    handIndex:h,
 
     partyIndex:
       Math.ceil(
-        handIndex / 5
+        h/5
       ),
 
     trump:
       TRUMPS[
-        (
-          handIndex - 1
-        ) %
+        (h-1)%
         TRUMPS.length
       ],
 
     currentTurnIndex:
-      leaderIndex,
+      leader,
 
     nextLeaderIndex:
-      leaderIndex,
+      leader,
 
-    leadCount:
-      null,
+    leadCount:null,
 
     leadWasMaliutka:
       false,
 
-    leadPlayerId:
-      null,
+    leadPlayerId:null,
 
-    processing:
-      false,
+    processing:false,
 
-    gameOver:
-      false,
+    gameOver:false,
 
     lastHandScores:
-      previous
-        ? (
-          previous.lastHandScores ||
+      prev
+        ?(
+          prev.lastHandScores||
           {}
         )
-        : {},
+        :{},
 
     history:
-      previous
-        ? previous.history
-        : [],
+      prev
+        ?(
+          prev.history||
+          []
+        )
+        :[],
 
-    /*
-      ბოლო ტრიკზე ვის რა რიგით ჰქონდა სვლა.
-      საჭიროა რამდენიმე გახიშტულის წესისთვის.
-    */
-
-    lastTrickOrder:
-      [],
+    lastTrickOrder:[],
 
     turnEndsAt:
-      Date.now() +
-      TURN_SECONDS * 1000
+      Date.now()+
+      TURN*1000
   };
 }
 
-/* =========================================================
-   CARD COMPARISON
-========================================================= */
+function beats(
+  a,
+  b,
+  t
+){
+  let at=tr(a,t),
+      bt=tr(b,t);
 
-function cardBeats(
-  defender,
-  attacker,
-  trump
-) {
-  const defenderTrump =
-    isTrump(
-      defender,
-      trump
-    );
-
-  const attackerTrump =
-    isTrump(
-      attacker,
-      trump
-    );
-
-  /*
-    კოზირი ჭრის არაკოზირს.
-  */
-
-  if (
-    attackerTrump &&
-    !defenderTrump
-  ) {
+  if(
+    bt&&
+    !at
+  ){
     return true;
   }
 
-  if (
-    defenderTrump &&
-    !attackerTrump
-  ) {
+  if(
+    at&&
+    !bt
+  ){
     return false;
   }
 
-  /*
-    არცერთი არაა კოზირი,
-    ან ორივე კოზირია.
-
-    თუ მასტი სხვადასხვა აქვს და
-    კოზირი არ მუშაობს, ვერ ჭრის.
-  */
-
-  if (
-    defender.suit !==
-    attacker.suit
-  ) {
+  if(
+    a.suit!==
+    b.suit
+  ){
     return false;
   }
 
-  return (
-    rankIndex(attacker) >
-    rankIndex(defender)
+  return(
+    ri(b)>
+    ri(a)
   );
-}
-
-function sortPlayCards(
-  cards,
-  trump
-) {
-  return cards
-    .slice()
-    .sort(
-      function (a, b) {
-        const aTrump =
-          isTrump(a, trump)
-            ? 1
-            : 0;
-
-        const bTrump =
-          isTrump(b, trump)
-            ? 1
-            : 0;
-
-        if (
-          aTrump !==
-          bTrump
-        ) {
-          return (
-            bTrump -
-            aTrump
-          );
-        }
-
-        return (
-          rankIndex(b) -
-          rankIndex(a)
-        );
-      }
-    );
 }
 
 /*
-  2, 3, 4 ან 5 კარტიანი
-  კომბინაციის ჭრა.
+  MULTI CARD CUT FIX
 
-  საპასუხო კომბინაციამ
-  ყოველი შესაბამისი კარტი უნდა აჯობოს.
+  ეს ფუნქცია 2/3/4/5 კარტზე
+  ცდის ყველა შესაძლო დაწყვილებას.
 */
-
-function playBeats(
-  currentWinner,
-  challenger,
-  trump
-) {
-  if (
-    currentWinner.cards.length !==
-    challenger.cards.length
-  ) {
+function comboBeats(
+  base,
+  chal,
+  t
+){
+  if(
+    base.length!==
+    chal.length
+  ){
     return false;
   }
 
-  const base =
-    sortPlayCards(
-      currentWinner.cards,
-      trump
-    );
+  let used=
+    Array(
+      chal.length
+    ).fill(false);
 
-  const challenge =
-    sortPlayCards(
-      challenger.cards,
-      trump
-    );
+  let b=
+    base
+      .slice()
+      .sort(
+        (x,y)=>
+          ri(y)-ri(x)
+      );
 
-  for (
-    let i = 0;
-    i < base.length;
-    i++
-  ) {
-    if (
-      !cardBeats(
-        base[i],
-        challenge[i],
-        trump
-      )
-    ) {
-      return false;
+  function dfs(i){
+    if(
+      i===b.length
+    ){
+      return true;
     }
+
+    for(
+      let j=0;
+      j<chal.length;
+      j++
+    ){
+      if(used[j])
+        continue;
+
+      if(
+        beats(
+          b[i],
+          chal[j],
+          t
+        )
+      ){
+        used[j]=true;
+
+        if(
+          dfs(i+1)
+        ){
+          return true;
+        }
+
+        used[j]=false;
+      }
+    }
+
+    return false;
   }
 
-  return true;
+  return dfs(0);
 }
 
-function winningPlayIndex(game) {
-  if (
-    !game.table.length
-  ) {
+function winner(g){
+  if(
+    !g.table.length
+  ){
     return -1;
   }
 
-  let winnerIndex =
-    0;
+  let w=0;
 
-  for (
-    let i = 1;
-    i < game.table.length;
+  for(
+    let i=1;
+    i<g.table.length;
     i++
-  ) {
-    if (
-      playBeats(
-        game.table[winnerIndex],
-        game.table[i],
-        game.trump
+  ){
+    if(
+      comboBeats(
+        g.table[w].cards,
+        g.table[i].cards,
+        g.trump
       )
-    ) {
-      winnerIndex =
-        i;
+    ){
+      w=i;
     }
   }
 
-  return winnerIndex;
+  return w;
 }
 
-/* =========================================================
-   SAME SUIT HELPERS
-========================================================= */
-
-function hasSameSuitGroup(
-  hand,
-  count
-) {
-  if (
-    count <= 1
-  ) {
-    return true;
-  }
-
-  return SUITS.some(
-    function (suit) {
-      return (
-        hand.filter(
-          function (card) {
-            return (
-              card.suit ===
-              suit
-            );
-          }
-        ).length >= count
-      );
-    }
-  );
-}
-
-function firstSameSuitGroup(
-  hand,
-  count
-) {
-  if (
-    !hand.length
-  ) {
-    return [];
-  }
-
-  if (
-    count <= 1
-  ) {
-    return [0];
-  }
-
-  for (
-    const suit of
-    SUITS
-  ) {
-    const indexes = [];
-
-    for (
-      let index = 0;
-      index < hand.length;
-      index++
-    ) {
-      if (
-        hand[index].suit ===
-        suit
-      ) {
-        indexes.push(index);
-      }
-
-      if (
-        indexes.length ===
-        count
-      ) {
-        return indexes;
-      }
-    }
-  }
-
-  const fallback = [];
-
-  for (
-    let i = 0;
-    i <
-    Math.min(
-      count,
-      hand.length
-    );
-    i++
-  ) {
-    fallback.push(i);
-  }
-
-  return fallback;
-}
-
-/* =========================================================
-   CLIENT STATE
-========================================================= */
-
-function getClientState(
-  room,
-  viewerId,
-  revealAll
-) {
-  const game =
-    room.game;
-
-  if (
-    !game
-  ) {
-    return null;
-  }
-
-  const visibleCards = {};
-
-  if (
-    revealAll
-  ) {
-    for (
-      const player of
-      room.players
-    ) {
-      visibleCards[player.id] =
-        game.hands[player.id] ||
-        [];
-    }
-  } else {
-    visibleCards[viewerId] =
-      game.hands[viewerId] ||
-      [];
-  }
-
-  const winningIndex =
-    winningPlayIndex(
-      game
-    );
-
-  return {
-    roomId:
-      room.id,
-
-    stake:
-      room.stake,
-
-    capacity:
-      room.capacity,
-
-    parties:
-      room.parties,
-
-    totalHands:
-      room.parties * 5,
-
-    handIndex:
-      game.handIndex,
-
-    partyIndex:
-      game.partyIndex,
-
-    trump:
-      game.trump,
-
-    deckCount:
-      game.deck.length,
-
-    currentTurnIndex:
-      game.currentTurnIndex,
-
-    processing:
-      game.processing,
-
-    gameOver:
-      game.gameOver,
-
-    viewingPlayerId:
-      viewerId,
-
-    revealAll:
-      !!revealAll,
-
-    playersCards:
-      visibleCards,
-
-    lastHandScores:
-      game.lastHandScores,
-
-    turnEndsAt:
-      game.turnEndsAt,
-
-    turnSeconds:
-      TURN_SECONDS,
-
-    leadCount:
-      game.leadCount,
-
-    leadWasMaliutka:
-      game.leadWasMaliutka,
-
-    table:
-      game.table.map(
-        function (
-          play,
-          index
-        ) {
-          return {
-            playerId:
-              play.playerId,
-
-            playerName:
-              play.playerName,
-
-            cards:
-              play.cards,
-
-            isWinning:
-              index ===
-              winningIndex
-          };
-        }
-      ),
-
-    players:
-      room.players.map(
-        function (
-          player,
-          index
-        ) {
-          return {
-            id:
-              player.id,
-
-            name:
-              player.name,
-
-            isBot:
-              !!player.isBot,
-
-            isTester:
-              !!player.isTester,
-
-            balance:
-              player.balance,
-
-            cardCount:
-              (
-                game.hands[
-                  player.id
-                ] ||
-                []
-              ).length,
-
-            handPoints:
-              cardPoints(
-                game.taken[
-                  player.id
-                ]
-              ),
-
-            totalPoints:
-              game.totals[
-                player.id
-              ] ||
-              0,
-
-            isCurrent:
-              index ===
-              game.currentTurnIndex,
-
-            xp:
-              player.stats.xp,
-
-            level:
-              player.stats.level,
-
-            wins:
-              player.stats.wins,
-
-            streak:
-              player.stats.streak,
-
-            frame:
-              playerFrame(
-                player
-              ),
-
-            achievements:
-              player.stats
-                .achievements
-                .slice()
-          };
-        }
-      )
-  };
-}
-
-function broadcast(room) {
-  for (
-    const player of
-    room.players
-  ) {
-    if (
-      player.isBot
-    ) {
-      continue;
-    }
-
-    io.to(
-      player.id
-    ).emit(
-      'gameStateUpdate',
-      getClientState(
-        room,
-        player.id,
-        player.isTester
-      )
-    );
-  }
-}
-
-/* =========================================================
-   TURN TIMER
-========================================================= */
-
-function setTurn(
-  room,
-  playerIndex
-) {
-  if (
-    !room.game ||
-    room.game.gameOver
-  ) {
-    return;
-  }
-
-  clearTimeout(
-    room.timer
-  );
-
-  room.game.currentTurnIndex =
-    playerIndex;
-
-  room.game.turnEndsAt =
-    Date.now() +
-    TURN_SECONDS * 1000;
-
-  room.timer =
-    setTimeout(
-      function () {
-        autoPlayCurrent(
-          room
-        );
-      },
-      TURN_SECONDS * 1000 +
-      150
-    );
-}
-
-/* =========================================================
-   REFILL
-========================================================= */
-
-function refillCards(
-  room,
-  winnerIndex
-) {
-  const game =
-    room.game;
-
-  while (
-    game.deck.length
-  ) {
-    let dealt =
-      false;
-
-    /*
-      გამარჯვებულიდან იწყება დარიგება.
-    */
-
-    for (
-      let offset = 0;
-      offset <
-      room.players.length;
-      offset++
-    ) {
-      const player =
-        room.players[
-          (
-            winnerIndex +
-            offset
-          ) %
-          room.players.length
-        ];
-
-      const hand =
-        game.hands[
-          player.id
-        ];
-
-      if (
-        hand.length < 5 &&
-        game.deck.length
-      ) {
-        hand.push(
-          game.deck.pop()
-        );
-
-        dealt =
-          true;
-      }
-    }
-
-    if (
-      !dealt
-    ) {
-      break;
-    }
-  }
-}
-
-/* =========================================================
-   NEXT HAND LEADER
-========================================================= */
-
-function getNextHandLeader(
-  room,
-  game,
-  rawScores
-) {
-  const zeroPlayers =
-    room.players.filter(
-      function (player) {
-        return (
-          rawScores[
-            player.id
-          ] === 0
-        );
-      }
-    );
-
-  /*
-    თუ ორი ან მეტი გაიხიშტა:
-    ბოლო ტრიკზე რომელი გახიშტული
-    ითამაშა ბოლოს, მის შემდეგ იწყება.
-  */
-
-  if (
-    zeroPlayers.length >= 2 &&
-    game.lastTrickOrder.length
-  ) {
-    const zeroIds =
-      zeroPlayers.map(
-        function (player) {
-          return player.id;
-        }
-      );
-
-    let lastZeroId =
-      null;
-
-    for (
-      const playerId of
-      game.lastTrickOrder
-    ) {
-      if (
-        zeroIds.includes(
-          playerId
-        )
-      ) {
-        lastZeroId =
-          playerId;
-      }
-    }
-
-    if (
-      lastZeroId
-    ) {
-      const index =
-        room.players.findIndex(
-          function (player) {
-            return (
-              player.id ===
-              lastZeroId
-            );
-          }
-        );
-
-      return (
-        (
-          index + 1
-        ) %
-        room.players.length
-      );
-    }
-  }
-
-  /*
-    ჩვეულებრივი წესი:
-    ვისაც ნაკლები raw ქულა აქვს,
-    იმის მომდევნო იწყებს.
-  */
-
-  let minimum =
-    Infinity;
-
-  let minimumIndex =
-    0;
-
-  room.players.forEach(
-    function (
-      player,
-      index
-    ) {
-      const raw =
-        rawScores[
-          player.id
-        ];
-
-      if (
-        raw < minimum
-      ) {
-        minimum =
-          raw;
-
-        minimumIndex =
-          index;
-      }
-    }
-  );
-
-  return (
+function willCut(
+  g,
+  cards
+){
+  let w=
+    winner(g);
+
+  return(
+    !g.table.length
+    ||
     (
-      minimumIndex + 1
-    ) %
-    room.players.length
-  );
-}
-
-/* =========================================================
-   FINISH HAND
-========================================================= */
-
-function finishHand(room) {
-  const game =
-    room.game;
-
-  const rawScores = {};
-  const scores = {};
-
-  for (
-    const player of
-    room.players
-  ) {
-    const raw =
-      cardPoints(
-        game.taken[
-          player.id
-        ]
-      );
-
-    rawScores[
-      player.id
-    ] =
-      raw;
-
-    /*
-      ამჟამინდელი სატესტო ქულები:
-      0 = -120.
-    */
-
-    const score =
-      raw === 0
-        ? -120
-        : raw;
-
-    scores[
-      player.id
-    ] =
-      score;
-
-    game.totals[
-      player.id
-    ] =
-      (
-        game.totals[
-          player.id
-        ] ||
-        0
-      ) +
-      score;
-
-    player.stats.xp +=
-      Math.max(
-        5,
-        Math.floor(
-          raw / 4
-        )
-      );
-
-    recalcLevel(
-      player
-    );
-  }
-
-  game.lastHandScores =
-    Object.assign(
-      {},
-      scores
-    );
-
-  game.history.push({
-    hand:
-      game.handIndex,
-
-    rawScores:
-      Object.assign(
-        {},
-        rawScores
-      ),
-
-    scores:
-      Object.assign(
-        {},
-        scores
-      ),
-
-    totals:
-      Object.assign(
-        {},
-        game.totals
+      w>=0
+      &&
+      comboBeats(
+        g.table[w].cards,
+        cards,
+        g.trump
       )
-  });
-
-  /*
-    მთელი მატჩი დასრულდა.
-  */
-
-  if (
-    game.handIndex >=
-    room.parties * 5
-  ) {
-    game.gameOver =
-      true;
-
-    clearTimeout(
-      room.timer
-    );
-
-    let winner =
-      room.players[0];
-
-    for (
-      const player of
-      room.players
-    ) {
-      if (
-        (
-          game.totals[
-            player.id
-          ] || 0
-        )
-        >
-        (
-          game.totals[
-            winner.id
-          ] || 0
-        )
-      ) {
-        winner =
-          player;
-      }
-    }
-
-    winner.stats.wins +=
-      1;
-
-    winner.stats.xp +=
-      100;
-
-    recalcLevel(
-      winner
-    );
-
-    broadcast(
-      room
-    );
-
-    io.to(
-      room.id
-    ).emit(
-      'sfxEvent',
-      {
-        type:
-          'win'
-      }
-    );
-
-    io.to(
-      room.id
-    ).emit(
-      'gameWinner',
-      {
-        playerId:
-          winner.id,
-
-        playerName:
-          winner.name
-      }
-    );
-
-    return;
-  }
-
-  game.nextLeaderIndex =
-    getNextHandLeader(
-      room,
-      game,
-      rawScores
-    );
-
-  room.game =
-    startHand(
-      room,
-      game
-    );
-
-  room.game.lastHandScores =
-    Object.assign(
-      {},
-      scores
-    );
-
-  setTurn(
-    room,
-    room.game.currentTurnIndex
-  );
-
-  broadcast(
-    room
-  );
-
-  io.to(
-    room.id
-  ).emit(
-    'sfxEvent',
-    {
-      type:
-        'deal'
-    }
-  );
-
-  scheduleBot(
-    room
+    )
   );
 }
 
-/* =========================================================
-   COMPLETE TRICK
-========================================================= */
-
-function completeTrick(room) {
-  const game =
-    room.game;
-
-  const winnerTableIndex =
-    winningPlayIndex(
-      game
-    );
-
-  const winnerPlay =
-    game.table[
-      winnerTableIndex
-    ];
-
-  if (
-    !winnerPlay
-  ) {
-    return;
-  }
-
-  const allCards = [];
-
-  for (
-    const play of
-    game.table
-  ) {
-    allCards.push(
-      ...play.cards
-    );
-  }
-
-  /*
-    მალიუტკის შემთხვევაშიც მხოლოდ
-    ამ სვლაში მაგიდაზე დადებული
-    კარტები მიდის გამარჯვებულთან.
-  */
-
-  game.taken[
-    winnerPlay.playerId
-  ].push(
-    ...allCards
-  );
-
-  game.lastTrickOrder =
-    game.table.map(
-      function (play) {
-        return play.playerId;
-      }
-    );
-
-  const winnerIndex =
-    room.players.findIndex(
-      function (player) {
-        return (
-          player.id ===
-          winnerPlay.playerId
-        );
-      }
-    );
-
-  const winner =
-    room.players[
-      winnerIndex
-    ];
-
-  if (
-    winner
-  ) {
-    winner.stats.streak +=
-      1;
-
-    winner.stats.xp +=
-      10;
-
-    recalcLevel(
-      winner
-    );
-
-    for (
-      const player of
-      room.players
-    ) {
-      if (
-        player.id !==
-        winner.id
-      ) {
-        player.stats.streak =
-          0;
-      }
-    }
-
-    if (
-      winner.stats.streak >= 3
-    ) {
-      awardAchievement(
-        room,
-        winner,
-        'triple_streak',
-        '3-ჯერ ზედიზედ მოგება'
-      );
-    }
-
-    if (
-      winnerTableIndex > 0
-    ) {
-      const cutWithTrump =
-        winnerPlay.cards.some(
-          function (card) {
-            return isTrump(
-              card,
-              game.trump
-            );
-          }
-        );
-
-      if (
-        cutWithTrump
-      ) {
-        awardAchievement(
-          room,
-          winner,
-          'invisible_cut',
-          'უხილავი ჭრა'
-        );
-      }
-    }
-  }
-
-  game.processing =
-    true;
-
-  clearTimeout(
-    room.timer
-  );
-
-  broadcast(
-    room
-  );
-
-  io.to(
-    room.id
-  ).emit(
-    'sfxEvent',
-    {
-      type:
-        winnerTableIndex === 0
-          ? 'take'
-          : 'cut'
-    }
-  );
-
-  setTimeout(
-    function () {
-      if (
-        !rooms.has(
-          room.id
-        )
-        ||
-        room.game !==
-        game
-      ) {
-        return;
-      }
-
-      game.table =
-        [];
-
-      game.leadCount =
-        null;
-
-      game.leadWasMaliutka =
-        false;
-
-      game.leadPlayerId =
-        null;
-
-      /*
-        მალიუტკის შემდეგაც ჩვეულებრივ
-        ვავსებთ ხელებს დასტიდან.
-      */
-
-      refillCards(
-        room,
-        winnerIndex
-      );
-
-      game.processing =
-        false;
-
-      const allHandsEmpty =
-        room.players.every(
-          function (player) {
-            return (
-              (
-                game.hands[
-                  player.id
-                ] ||
-                []
-              ).length === 0
-            );
-          }
-        );
-
-      if (
-        allHandsEmpty &&
-        game.deck.length === 0
-      ) {
-        finishHand(
-          room
-        );
-
-        return;
-      }
-
-      /*
-        ტრიკის გამარჯვებული იწყებს
-        შემდეგ ჩვეულებრივ სვლას.
-      */
-
-      setTurn(
-        room,
-        winnerIndex
-      );
-
-      broadcast(
-        room
-      );
-
-      scheduleBot(
-        room
-      );
-    },
-    900
-  );
-}
-
-/* =========================================================
-   VALIDATE SELECTION
-========================================================= */
-
-function validateSelection(
-  game,
+function valid(
+  g,
   hand,
-  indexes
-) {
-  if (
-    !indexes.length
-  ) {
-    return {
-      ok: false,
+  idxs
+){
+  if(
+    !idxs.length
+  ){
+    return{
+      ok:false,
       message:
         'აირჩიე მინიმუმ 1 კარტი.'
     };
   }
 
-  if (
-    indexes.length > 5
-  ) {
-    return {
-      ok: false,
+  if(
+    idxs.length>5
+  ){
+    return{
+      ok:false,
       message:
-        'ერთ სვლაზე მაქსიმუმ 5 კარტი შეგიძლია.'
+        'მაქსიმუმ 5 კარტი.'
     };
   }
 
-  const cards =
-    indexes.map(
-      function (index) {
-        return hand[index];
-      }
+  let cards=
+    idxs.map(
+      i=>hand[i]
     );
 
-  if (
+  if(
     cards.some(
-      function (card) {
-        return !card;
-      }
+      x=>!x
     )
-  ) {
-    return {
-      ok: false,
+  ){
+    return{
+      ok:false,
       message:
         'კარტის არჩევაში შეცდომაა.'
     };
   }
 
-  const sameSuit =
-    allSameSuit(
-      cards
-    );
-
   /*
-    პირველი სვლა:
-    1-5 კარტი.
-    2+ კარტი ერთი მასტის.
-    5 = მალიუტკა.
+    პირველი ჩამოსვლა:
+    ყველა არჩეული კარტი
+    ერთი მასტის.
   */
-
-  if (
-    game.table.length === 0
-  ) {
-    if (
-      !sameSuit
-    ) {
-      return {
-        ok: false,
+  if(
+    !g.table.length
+  ){
+    if(
+      !same(cards)
+    ){
+      return{
+        ok:false,
         message:
-          'ერთად ჩასული კარტები ერთი მასტის უნდა იყოს.'
+          'პირველი სვლისას კარტები ერთი მასტის უნდა იყოს.'
       };
     }
 
-    if (
-      cards.length === 5 &&
-      !isMaliutka(cards)
-    ) {
-      return {
-        ok: false,
-        message:
-          '5 კარტით სვლა მხოლოდ მალიუტკაა.'
-      };
-    }
-
-    return {
-      ok: true,
-      cards: cards
+    return{
+      ok:true,
+      cards,
+      willCut:true
     };
   }
 
   /*
-    MALYUTKA:
-    ყველა მოთამაშე აგდებს
-    ხელში არსებულ ყველა კარტს.
+    მალიუტკაზე
+    მთელი დარჩენილი ხელი.
   */
-
-  if (
-    game.leadWasMaliutka
-  ) {
-    if (
-      cards.length !==
+  if(
+    g.leadWasMaliutka
+  ){
+    if(
+      cards.length!==
       hand.length
-    ) {
-      return {
-        ok: false,
+    ){
+      return{
+        ok:false,
         message:
-          'მალიუტკაზე ყველა დარჩენილი კარტი უნდა ჩამოხვიდე.'
+          'მალიუტკაზე მთელი ხელი უნდა ჩამოხვიდე.'
       };
     }
 
-    return {
-      ok: true,
-      cards: cards
+    return{
+      ok:true,
+      cards,
+      willCut:
+        willCut(
+          g,
+          cards
+        )
     };
   }
 
-  const required =
-    game.leadCount ||
+  /*
+    მთავარი FIX:
+    თუ მაგიდაზე N კარტია,
+    პასუხიც ზუსტად N კარტი.
+
+    აღარ მოითხოვება,
+    რომ საპასუხო კარტები
+    ერთმანეთთან ერთი მასტის იყოს.
+  */
+  let n=
+    g.leadCount||
     1;
 
-  /*
-    ჩვეულებრივი საპასუხო სვლა:
-    ზუსტად იგივე რაოდენობა.
-  */
-
-  if (
-    cards.length !==
-    required
-  ) {
-    return {
-      ok: false,
+  if(
+    cards.length!==n
+  ){
+    return{
+      ok:false,
       message:
-        'უნდა ჩამოხვიდე ზუსტად ' +
-        required +
+        'უნდა აირჩიო ზუსტად '+
+        n+
         ' კარტი.'
     };
   }
 
-  /*
-    თუ შეუძლია საჭირო რაოდენობის
-    ერთი მასტის კარტის შეკრება,
-    არჩეულიც ერთი მასტის უნდა იყოს.
-  */
-
-  if (
-    hasSameSuitGroup(
-      hand,
-      required
-    )
-    &&
-    !sameSuit
-  ) {
-    return {
-      ok: false,
-      message:
-        'თუ გაქვს საშუალება, არჩეული კარტები ერთი მასტის უნდა იყოს.'
-    };
-  }
-
-  return {
-    ok: true,
-    cards: cards
+  return{
+    ok:true,
+    cards,
+    willCut:
+      willCut(
+        g,
+        cards
+      )
   };
 }
 
-/* =========================================================
-   APPLY PLAY
-========================================================= */
+function pstats(p){
+  if(
+    p.userKey&&
+    users[p.userKey]
+  ){
+    let u=
+      shape(
+        users[p.userKey]
+      );
 
-function applyPlay(
+    return{
+      avatar:u.avatar,
+      xp:u.xp,
+      level:u.level,
+      wins:u.wins,
+      frame:u.frame
+    };
+  }
+
+  return{
+    avatar:p.avatar||'🤖',
+    xp:p.xp||0,
+    level:p.level||1,
+    wins:p.wins||0,
+    frame:p.frame||'bronze'
+  };
+}
+
+function state(
   room,
-  player,
-  indexes
-) {
-  const game =
-    room.game;
+  viewer,
+  reveal
+){
+  let g=room.game,
+      vis={};
 
-  if (
-    !game ||
-    game.processing ||
-    game.gameOver
-  ) {
-    return {
-      ok: false,
+  if(reveal){
+    for(
+      const p of
+      room.players
+    ){
+      vis[p.id]=
+        g.hands[p.id]||
+        [];
+    }
+  }else{
+    vis[viewer]=
+      g.hands[viewer]||
+      [];
+  }
+
+  let w=
+    winner(g);
+
+  return{
+    roomId:room.id,
+
+    roomName:room.name,
+
+    stake:room.stake,
+
+    capacity:room.capacity,
+
+    parties:room.parties,
+
+    totalHands:
+      room.parties*5,
+
+    handIndex:
+      g.handIndex,
+
+    partyIndex:
+      g.partyIndex,
+
+    trump:
+      g.trump,
+
+    deckCount:
+      g.deck.length,
+
+    currentTurnIndex:
+      g.currentTurnIndex,
+
+    processing:
+      g.processing,
+
+    gameOver:
+      g.gameOver,
+
+    viewingPlayerId:
+      viewer,
+
+    revealAll:
+      !!reveal,
+
+    playersCards:
+      vis,
+
+    lastHandScores:
+      g.lastHandScores,
+
+    history:
+      g.history,
+
+    turnEndsAt:
+      g.turnEndsAt,
+
+    turnSeconds:
+      TURN,
+
+    leadCount:
+      g.leadCount,
+
+    leadWasMaliutka:
+      g.leadWasMaliutka,
+
+    table:
+      g.table.map(
+        (p,i)=>({
+          playerId:
+            p.playerId,
+
+          playerName:
+            p.playerName,
+
+          cards:
+            p.cards,
+
+          cut:
+            !!p.cut,
+
+          isWinning:
+            i===w
+        })
+      ),
+
+    players:
+      room.players.map(
+        (p,i)=>{
+          let s=
+            pstats(p);
+
+          return{
+            id:p.id,
+
+            name:p.name,
+
+            isBot:
+              !!p.isBot,
+
+            isTester:
+              !!p.isTester,
+
+            balance:
+              p.balance,
+
+            cardCount:
+              (
+                g.hands[p.id]||
+                []
+              ).length,
+
+            handPoints:
+              pts(
+                g.taken[p.id]
+              ),
+
+            totalPoints:
+              g.totals[p.id]||
+              0,
+
+            isCurrent:
+              i===
+              g.currentTurnIndex,
+
+            ...s
+          };
+        }
+      )
+  };
+}
+
+function broadcast(r){
+  for(
+    const p of
+    r.players
+  ){
+    if(!p.isBot){
+      io.to(p.id)
+        .emit(
+          'gameStateUpdate',
+          state(
+            r,
+            p.id,
+            p.isTester
+          )
+        );
+    }
+  }
+}
+
+function setTurn(
+  r,
+  i
+){
+  if(
+    !r.game||
+    r.game.gameOver
+  ){
+    return;
+  }
+
+  clearTimeout(
+    r.timer
+  );
+
+  r.game
+    .currentTurnIndex=i;
+
+  r.game
+    .turnEndsAt=
+      Date.now()+
+      TURN*1000;
+
+  r.timer=
+    setTimeout(
+      ()=>auto(r),
+      TURN*1000+
+      100
+    );
+}
+
+function refill(
+  r,
+  w
+){
+  let g=r.game;
+
+  while(
+    g.deck.length
+  ){
+    let dealt=false;
+
+    for(
+      let o=0;
+      o<r.players.length;
+      o++
+    ){
+      let p=
+        r.players[
+          (w+o)%
+          r.players.length
+        ];
+
+      if(
+        g.hands[p.id].length<5
+        &&
+        g.deck.length
+      ){
+        g.hands[p.id]
+          .push(
+            g.deck.pop()
+          );
+
+        dealt=true;
+      }
+    }
+
+    if(!dealt)
+      break;
+  }
+}
+
+function nextLeader(
+  r,
+  g,
+  raw
+){
+  let zeros=
+    r.players.filter(
+      p=>raw[p.id]===0
+    );
+
+  if(
+    zeros.length>=2
+    &&
+    g.lastTrickOrder.length
+  ){
+    let z=
+      new Set(
+        zeros.map(
+          p=>p.id
+        )
+      );
+
+    let last=null;
+
+    for(
+      const pid of
+      g.lastTrickOrder
+    ){
+      if(
+        z.has(pid)
+      ){
+        last=pid;
+      }
+    }
+
+    if(last){
+      return(
+        r.players.findIndex(
+          p=>p.id===last
+        )+1
+      )%
+      r.players.length;
+    }
+  }
+
+  let m=Infinity,
+      mi=0;
+
+  r.players.forEach(
+    (p,i)=>{
+      if(
+        raw[p.id]<m
+      ){
+        m=raw[p.id];
+        mi=i;
+      }
+    }
+  );
+
+  return(
+    mi+1
+  )%
+  r.players.length;
+}
+
+function finish(r){
+  let g=r.game,
+      raw={},
+      scores={};
+
+  for(
+    const p of
+    r.players
+  ){
+    raw[p.id]=
+      pts(
+        g.taken[p.id]
+      );
+
+    scores[p.id]=
+      raw[p.id]===0
+        ?-120
+        :raw[p.id];
+
+    g.totals[p.id]=
+      (
+        g.totals[p.id]||
+        0
+      )+
+      scores[p.id];
+
+    if(p.userKey){
+      xp(
+        p.userKey,
+        20
+      );
+    }
+  }
+
+  g.lastHandScores={
+    ...scores
+  };
+
+  g.history.push({
+    hand:g.handIndex,
+    party:g.partyIndex,
+    trump:g.trump,
+    rawScores:{
+      ...raw
+    },
+    scores:{
+      ...scores
+    },
+    totals:{
+      ...g.totals
+    }
+  });
+
+  if(
+    g.handIndex>=
+    r.parties*5
+  ){
+    g.gameOver=true;
+
+    clearTimeout(
+      r.timer
+    );
+
+    let win=
+      r.players[0];
+
+    for(
+      const p of
+      r.players
+    ){
+      if(
+        (
+          g.totals[p.id]||
+          0
+        )
+        >
+        (
+          g.totals[win.id]||
+          0
+        )
+      ){
+        win=p;
+      }
+    }
+
+    for(
+      const p of
+      r.players
+    ){
+      if(
+        p.userKey&&
+        users[p.userKey]
+      ){
+        let u=
+          shape(
+            users[p.userKey]
+          );
+
+        u.games++;
+        u.xp+=30;
+
+        if(
+          p.id===
+          win.id
+        ){
+          u.wins++;
+          u.xp+=100;
+
+          quest(
+            p.userKey,
+            'wins'
+          );
+        }
+
+        u.level=
+          level(u.xp);
+
+        u.frame=
+          frame(u.wins);
+
+        save();
+
+        pushProfile(
+          p.userKey
+        );
+      }
+    }
+
+    broadcast(r);
+
+    io.to(r.id)
+      .emit(
+        'gameWinner',
+        {
+          playerName:
+            win.name
+        }
+      );
+
+    io.to(r.id)
+      .emit(
+        'sfxEvent',
+        {
+          type:'win'
+        }
+      );
+
+    return;
+  }
+
+  g.nextLeaderIndex=
+    nextLeader(
+      r,
+      g,
+      raw
+    );
+
+  r.game=
+    newHand(
+      r,
+      g
+    );
+
+  r.game.lastHandScores={
+    ...scores
+  };
+
+  setTurn(
+    r,
+    r.game
+      .currentTurnIndex
+  );
+
+  broadcast(r);
+
+  io.to(r.id)
+    .emit(
+      'sfxEvent',
+      {
+        type:'deal'
+      }
+    );
+
+  botSchedule(r);
+}
+
+function trick(r){
+  let g=r.game,
+      w=winner(g),
+      wp=g.table[w];
+
+  if(!wp)
+    return;
+
+  g.taken[
+    wp.playerId
+  ].push(
+    ...g.table.flatMap(
+      x=>x.cards
+    )
+  );
+
+  g.lastTrickOrder=
+    g.table.map(
+      x=>x.playerId
+    );
+
+  let wi=
+    r.players.findIndex(
+      p=>p.id===
+      wp.playerId
+    );
+
+  let win=
+    r.players[wi];
+
+  if(
+    win&&
+    w>0
+  ){
+    achievement(
+      r,
+      win,
+      'clean_cut',
+      'უხილავი ჭრა'
+    );
+  }
+
+  g.processing=true;
+
+  clearTimeout(
+    r.timer
+  );
+
+  broadcast(r);
+
+  io.to(r.id)
+    .emit(
+      'sfxEvent',
+      {
+        type:
+          w===0
+            ?'take'
+            :'cut'
+      }
+    );
+
+  setTimeout(
+    ()=>{
+      if(
+        !rooms.has(r.id)
+        ||
+        r.game!==g
+      ){
+        return;
+      }
+
+      g.table=[];
+
+      g.leadCount=null;
+
+      g.leadWasMaliutka=
+        false;
+
+      g.leadPlayerId=
+        null;
+
+      refill(
+        r,
+        wi
+      );
+
+      g.processing=false;
+
+      let done=
+        r.players.every(
+          p=>
+            (
+              g.hands[p.id]||
+              []
+            ).length===0
+        )
+        &&
+        !g.deck.length;
+
+      if(done){
+        return finish(r);
+      }
+
+      setTurn(
+        r,
+        wi
+      );
+
+      broadcast(r);
+
+      botSchedule(r);
+    },
+    850
+  );
+}
+
+function play(
+  r,
+  p,
+  idx
+){
+  let g=r.game;
+
+  if(
+    !g||
+    g.processing||
+    g.gameOver
+  ){
+    return{
+      ok:false,
       message:
         'ახლა სვლა შეუძლებელია.'
     };
   }
 
-  const hand =
-    game.hands[
-      player.id
-    ] ||
+  let hand=
+    g.hands[p.id]||
     [];
 
-  const result =
-    validateSelection(
-      game,
+  let v=
+    valid(
+      g,
       hand,
-      indexes
+      idx
     );
 
-  if (
-    !result.ok
-  ) {
-    return result;
-  }
+  if(!v.ok)
+    return v;
 
-  /*
-    პირველი ჩამსვლელი განსაზღვრავს
-    კარტების რაოდენობას.
-  */
+  if(
+    !g.table.length
+  ){
+    g.leadCount=
+      v.cards.length;
 
-  if (
-    game.table.length === 0
-  ) {
-    game.leadCount =
-      result.cards.length;
-
-    game.leadWasMaliutka =
-      isMaliutka(
-        result.cards
+    g.leadWasMaliutka=
+      mali(
+        v.cards
       );
 
-    game.leadPlayerId =
-      player.id;
+    g.leadPlayerId=
+      p.id;
 
-    if (
-      game.leadWasMaliutka
-    ) {
-      awardAchievement(
-        room,
-        player,
+    if(
+      g.leadWasMaliutka
+    ){
+      achievement(
+        r,
+        p,
         'maliutka_master',
         'მალიუტკის ოსტატი'
       );
+
+      if(p.userKey){
+        quest(
+          p.userKey,
+          'maliutka'
+        );
+      }
     }
   }
 
-  /*
-    ხელიდან კარტების ამოღება.
-  */
-
-  game.hands[
-    player.id
-  ] =
+  g.hands[p.id]=
     hand.filter(
-      function (
-        card,
-        index
-      ) {
-        return (
-          !indexes.includes(
-            index
-          )
-        );
+      (_,i)=>
+        !idx.includes(i)
+    );
+
+  g.table.push({
+    playerId:p.id,
+    playerName:p.name,
+    cards:v.cards,
+    cut:v.willCut
+  });
+
+  io.to(r.id)
+    .emit(
+      'sfxEvent',
+      {
+        type:
+          g.table.length>1
+          &&
+          v.willCut
+            ?'cut'
+            :'play'
       }
     );
 
-  game.table.push({
-    playerId:
-      player.id,
-
-    playerName:
-      player.name,
-
-    cards:
-      result.cards
-  });
-
-  io.to(
-    room.id
-  ).emit(
-    'sfxEvent',
-    {
-      type:
-        game.table.length > 1
-          ? 'cut'
-          : 'play'
-    }
-  );
-
-  /*
-    ყველა მოთამაშემ დადო.
-  */
-
-  if (
-    game.table.length ===
-    room.players.length
-  ) {
-    completeTrick(
-      room
-    );
-  } else {
+  if(
+    g.table.length===
+    r.players.length
+  ){
+    trick(r);
+  }else{
     setTurn(
-      room,
+      r,
       (
-        game.currentTurnIndex + 1
-      ) %
-      room.players.length
+        g.currentTurnIndex+
+        1
+      )%
+      r.players.length
     );
 
-    broadcast(
-      room
-    );
+    broadcast(r);
 
-    scheduleBot(
-      room
-    );
+    botSchedule(r);
   }
 
-  return {
-    ok: true
+  return{
+    ok:true
   };
 }
 
-/* =========================================================
-   BOT
-========================================================= */
+function combos(n,k){
+  let o=[];
 
-function chooseBotLeadCount(
-  hand
-) {
-  /*
-    ზოგჯერ ბოტმაც ითამაშოს
-    2/3/4/5 კარტი.
-  */
-
-  if (
-    Math.random() > 0.30
-  ) {
-    return 1;
-  }
-
-  for (
-    let count =
-      Math.min(
-        5,
-        hand.length
+  function f(s,a){
+    if(
+      a.length===k
+    ){
+      o.push(
+        a.slice()
       );
-    count >= 2;
-    count--
-  ) {
-    if (
-      hasSameSuitGroup(
-        hand,
-        count
-      )
-    ) {
-      return count;
+
+      return;
+    }
+
+    for(
+      let i=s;
+      i<n;
+      i++
+    ){
+      a.push(i);
+
+      f(
+        i+1,
+        a
+      );
+
+      a.pop();
     }
   }
 
-  return 1;
+  f(
+    0,
+    []
+  );
+
+  return o;
 }
 
-function botChoice(
-  room,
-  bot
-) {
-  const game =
-    room.game;
+function botPick(
+  r,
+  p
+){
+  let g=r.game,
+      h=g.hands[p.id]||
+      [];
 
-  const hand =
-    game.hands[
-      bot.id
-    ] ||
-    [];
+  if(!h.length)
+    return[];
 
-  if (
-    !hand.length
-  ) {
-    return [];
+  if(
+    g.leadWasMaliutka
+    &&
+    g.table.length
+  ){
+    return h.map(
+      (_,i)=>i
+    );
   }
 
-  /*
-    მალიუტკაზე ბოტი აგდებს
-    მთელ ხელს.
-  */
+  if(
+    !g.table.length
+  ){
+    for(
+      let n=
+        Math.min(
+          5,
+          h.length
+        );
+      n>=2;
+      n--
+    ){
+      for(
+        const s of
+        SUITS
+      ){
+        let x=
+          h.map(
+            (c,i)=>
+              c.suit===s
+                ?i
+                :-1
+          )
+          .filter(
+            i=>i>=0
+          )
+          .slice(
+            0,
+            n
+          );
 
-  if (
-    game.leadWasMaliutka &&
-    game.table.length
-  ) {
-    return hand.map(
-      function (
-        card,
-        index
-      ) {
-        return index;
+        if(
+          x.length===n
+          &&
+          Math.random()<.25
+        ){
+          return x;
+        }
+      }
+    }
+
+    return[0];
+  }
+
+  let n=
+    Math.min(
+      g.leadCount||1,
+      h.length
+    );
+
+  let all=
+    combos(
+      h.length,
+      n
+    );
+
+  for(
+    const x of all
+  ){
+    if(
+      willCut(
+        g,
+        x.map(
+          i=>h[i]
+        )
+      )
+    ){
+      return x;
+    }
+  }
+
+  return all[0]||[0];
+}
+
+function botSchedule(r){
+  let g=r.game;
+
+  if(
+    !g||
+    g.processing||
+    g.gameOver
+  ){
+    return;
+  }
+
+  let p=
+    r.players[
+      g.currentTurnIndex
+    ];
+
+  if(
+    p&&
+    p.isBot
+  ){
+    setTimeout(
+      ()=>{
+        if(
+          r.game===g
+          &&
+          r.players[
+            g.currentTurnIndex
+          ]
+          &&
+          r.players[
+            g.currentTurnIndex
+          ].id===p.id
+        ){
+          play(
+            r,
+            p,
+            botPick(
+              r,
+              p
+            )
+          );
+        }
+      },
+      550
+    );
+  }
+}
+
+function auto(r){
+  let g=r.game;
+
+  if(
+    !g||
+    g.processing||
+    g.gameOver
+  ){
+    return;
+  }
+
+  let p=
+    r.players[
+      g.currentTurnIndex
+    ];
+
+  let h=
+    g.hands[p.id]||
+    [];
+
+  if(!h.length)
+    return;
+
+  let x=
+    g.leadWasMaliutka
+    &&
+    g.table.length
+      ?h.map(
+        (_,i)=>i
+      )
+      :g.table.length
+        ?Array.from(
+          {
+            length:
+              Math.min(
+                g.leadCount||1,
+                h.length
+              )
+          },
+          (_,i)=>i
+        )
+        :[0];
+
+  io.to(r.id)
+    .emit(
+      'quickMessage',
+      {
+        playerId:p.id,
+        playerName:p.name,
+        text:'⏱ ავტომატური სვლა'
       }
     );
-  }
 
-  /*
-    პირველი სვლა.
-  */
-
-  if (
-    game.table.length === 0
-  ) {
-    const count =
-      chooseBotLeadCount(
-        hand
-      );
-
-    return firstSameSuitGroup(
-      hand,
-      count
-    );
-  }
-
-  /*
-    საპასუხო სვლა.
-  */
-
-  const required =
-    Math.min(
-      game.leadCount || 1,
-      hand.length
-    );
-
-  return firstSameSuitGroup(
-    hand,
-    required
+  play(
+    r,
+    p,
+    x
   );
 }
 
-function scheduleBot(room) {
-  if (
-    !room ||
-    !room.game ||
-    room.game.processing ||
-    room.game.gameOver
-  ) {
-    return;
-  }
-
-  const player =
-    room.players[
-      room.game.currentTurnIndex
-    ];
-
-  if (
-    !player ||
-    !player.isBot
-  ) {
-    return;
-  }
-
-  setTimeout(
-    function () {
-      botTurn(
-        room,
-        player
+function base(
+  socket,
+  fallback
+){
+  if(
+    socket.userKey&&
+    users[socket.userKey]
+  ){
+    let u=
+      shape(
+        users[socket.userKey]
       );
-    },
-    650
-  );
+
+    return{
+      name:u.username,
+      userKey:
+        socket.userKey,
+      avatar:u.avatar,
+      balance:u.balance
+    };
+  }
+
+  return{
+    name:
+      clean(fallback)
+      ||
+      'Guest'+
+      Math.floor(
+        Math.random()*9999
+      ),
+
+    userKey:null,
+
+    avatar:
+      AVATARS[0],
+
+    balance:
+      START
+  };
 }
 
-function botTurn(
-  room,
-  bot
-) {
-  if (
-    !rooms.has(
-      room.id
-    )
-    ||
-    !room.game
-    ||
-    room.game.processing
-    ||
-    room.game.gameOver
-  ) {
-    return;
-  }
+function tours(){
+  let n=
+    Date.now();
 
-  const currentPlayer =
-    room.players[
-      room.game.currentTurnIndex
-    ];
-
-  if (
-    !currentPlayer ||
-    currentPlayer.id !==
-    bot.id
-  ) {
-    return;
-  }
-
-  const indexes =
-    botChoice(
-      room,
-      bot
-    );
-
-  applyPlay(
-    room,
-    bot,
-    indexes
-  );
-}
-
-/* =========================================================
-   AUTO PLAY AFTER TIMER
-========================================================= */
-
-function autoPlayCurrent(room) {
-  if (
-    !rooms.has(
-      room.id
-    )
-    ||
-    !room.game
-    ||
-    room.game.processing
-    ||
-    room.game.gameOver
-  ) {
-    return;
-  }
-
-  const game =
-    room.game;
-
-  const player =
-    room.players[
-      game.currentTurnIndex
-    ];
-
-  if (
-    !player
-  ) {
-    return;
-  }
-
-  const hand =
-    game.hands[
-      player.id
-    ] ||
-    [];
-
-  if (
-    !hand.length
-  ) {
-    return;
-  }
-
-  let indexes;
-
-  if (
-    game.leadWasMaliutka &&
-    game.table.length
-  ) {
-    indexes =
-      hand.map(
-        function (
-          card,
-          index
-        ) {
-          return index;
-        }
-      );
-  } else if (
-    game.table.length
-  ) {
-    indexes =
-      firstSameSuitGroup(
-        hand,
-        Math.min(
-          game.leadCount || 1,
-          hand.length
-        )
-      );
-  } else {
-    indexes =
-      [0];
-  }
-
-  io.to(
-    room.id
-  ).emit(
-    'quickMessage',
+  return[
     {
-      playerId:
-        player.id,
-
-      playerName:
-        player.name,
-
-      text:
-        '⏱ ავტომატური სვლა'
+      id:'sun',
+      name:'Sunday Night Bura',
+      prize:'$2,500',
+      startAt:
+        n+
+        45*60000,
+      registered:18,
+      max:32
+    },
+    {
+      id:'mal',
+      name:'Maliutka Cup',
+      prize:'$5,000',
+      startAt:
+        n+
+        2*3600000,
+      registered:43,
+      max:64
+    },
+    {
+      id:'vip',
+      name:'VIP Masters',
+      prize:'$10,000',
+      startAt:
+        n+
+        24*3600000,
+      registered:11,
+      max:16
     }
-  );
-
-  applyPlay(
-    room,
-    player,
-    indexes
-  );
+  ];
 }
-
-/* =========================================================
-   SOCKET.IO
-========================================================= */
 
 io.on(
   'connection',
-  function (socket) {
+  s=>{
 
-    /* =====================================================
-       JOIN
-    ===================================================== */
+    s.emit(
+      'lobbyTables',
+      roomList()
+    );
 
-    socket.on(
-      'joinTable',
-      function (data) {
-        const name =
-          cleanName(
-            data &&
-            data.name
+    s.emit(
+      'tournaments',
+      tours()
+    );
+
+    s.on(
+      'register',
+      d=>{
+        let n=
+          clean(
+            d&&d.username
           );
 
-        if (
-          !name
-        ) {
-          socket.emit(
-            'errorMessage',
-            'შეიყვანე მოთამაშის სახელი.'
+        let p=
+          String(
+            d&&d.password||
+            ''
           );
 
-          return;
+        let k=
+          key(n);
+
+        if(
+          n.length<3
+        ){
+          return s.emit(
+            'authError',
+            'Username მინიმუმ 3 სიმბოლო უნდა იყოს.'
+          );
         }
 
-        if (
-          socket.roomId
-        ) {
-          socket.emit(
+        if(
+          p.length<4
+        ){
+          return s.emit(
+            'authError',
+            'Password მინიმუმ 4 სიმბოლო უნდა იყოს.'
+          );
+        }
+
+        if(users[k]){
+          return s.emit(
+            'authError',
+            'ეს Username უკვე არსებობს.'
+          );
+        }
+
+        let sl=
+          salt();
+
+        users[k]={
+          username:n,
+
+          salt:sl,
+
+          passwordHash:
+            hash(
+              p,
+              sl
+            ),
+
+          avatar:
+            safeAvatar(
+              d&&d.avatar
+            ),
+
+          xp:0,
+
+          wins:0,
+
+          games:0,
+
+          balance:
+            START,
+
+          achievements:[],
+
+          quests:
+            quests()
+        };
+
+        save();
+
+        s.userKey=k;
+
+        s.emit(
+          'authSuccess',
+          profile(
+            users[k]
+          )
+        );
+      }
+    );
+
+    s.on(
+      'login',
+      d=>{
+        let k=
+          key(
+            d&&d.username
+          );
+
+        let u=
+          users[k];
+
+        let p=
+          String(
+            d&&d.password||
+            ''
+          );
+
+        if(
+          !u
+          ||
+          hash(
+            p,
+            u.salt
+          )!==
+          u.passwordHash
+        ){
+          return s.emit(
+            'authError',
+            'Username ან Password არასწორია.'
+          );
+        }
+
+        s.userKey=k;
+
+        s.emit(
+          'authSuccess',
+          profile(u)
+        );
+      }
+    );
+
+    s.on(
+      'testerLogin',
+      ()=>{
+        let u=
+          users[TESTER];
+
+        if(!u){
+          let sl=
+            salt();
+
+          u=
+            users[TESTER]={
+              username:
+                TESTER,
+
+              salt:
+                sl,
+
+              passwordHash:
+                hash(
+                  'test',
+                  sl
+                ),
+
+              avatar:
+                '😎',
+
+              xp:0,
+
+              wins:0,
+
+              games:0,
+
+              balance:
+                START,
+
+              achievements:[],
+
+              quests:
+                quests()
+            };
+
+          save();
+        }
+
+        s.userKey=
+          TESTER;
+
+        s.emit(
+          'authSuccess',
+          profile(u)
+        );
+      }
+    );
+
+    s.on(
+      'registerTournament',
+      d=>{
+        if(
+          !s.userKey
+        ){
+          return s.emit(
+            'authError',
+            'ტურნირზე რეგისტრაციისთვის ჯერ შედი პროფილში.'
+          );
+        }
+
+        let t=
+          String(
+            d&&d.id||
+            ''
+          );
+
+        if(!t)
+          return;
+
+        if(
+          !tournamentRegs
+            .has(t)
+        ){
+          tournamentRegs
+            .set(
+              t,
+              new Set()
+            );
+        }
+
+        tournamentRegs
+          .get(t)
+          .add(
+            s.userKey
+          );
+
+        s.emit(
+          'tournamentRegistered',
+          {
+            id:t
+          }
+        );
+      }
+    );
+
+    s.on(
+      'joinTable',
+      d=>{
+        if(s.roomId){
+          return s.emit(
             'errorMessage',
             'უკვე მაგიდაზე ხარ.'
           );
-
-          return;
         }
 
-        let capacity =
-          parseInt(
-            data.capacity,
-            10
+        let b=
+          base(
+            s,
+            d&&d.name
           );
 
-        if (
-          !CAPACITIES.includes(
-            capacity
-          )
-        ) {
-          capacity =
-            3;
-        }
-
-        let parties =
-          parseInt(
-            data.parties,
-            10
+        let c=
+          Number(
+            d&&d.capacity
           );
 
-        if (
-          !Number.isInteger(
-            parties
-          )
-        ) {
-          parties =
-            1;
+        if(
+          ![3,4]
+            .includes(c)
+        ){
+          c=3;
         }
 
-        parties =
+        let pa=
           Math.max(
             1,
             Math.min(
-              MAX_PARTIES,
-              parties
+              4,
+              Number(
+                d&&d.parties
+              )||1
             )
           );
 
-        let stake =
+        let st=
           Number(
-            data.stake
+            d&&d.stake
           );
 
-        if (
-          !STAKES.includes(
-            stake
-          )
-        ) {
-          stake =
-            5;
+        if(
+          ![
+            5,
+            10,
+            25,
+            50,
+            100
+          ].includes(st)
+        ){
+          st=5;
         }
 
-        const tester =
-          isTesterName(
-            name
-          );
-
-        /*
-          მხოლოდ ჯერ არდაწყებული
-          შესაბამისი ოთახის ძებნა.
-        */
-
-        let room =
-          Array
-            .from(
-              rooms.values()
+        let r=
+          d&&d.roomId
+            ?rooms.get(
+              String(
+                d.roomId
+              )
             )
-            .find(
-              function (item) {
-                return (
-                  !item.game &&
-                  item.capacity ===
-                    capacity &&
-                  item.parties ===
-                    parties &&
-                  item.stake ===
-                    stake &&
-                  item.players.length <
-                    item.capacity
-                );
-              }
-            );
+            :null;
 
-        if (
-          !room
-        ) {
-          room =
-            createRoom(
-              capacity,
-              parties,
-              stake
+        if(
+          !r||
+          r.game||
+          r.players.length>=
+          r.capacity
+        ){
+          r=[
+            ...rooms.values()
+          ].find(
+            x=>
+              !x.game&&
+              x.capacity===c&&
+              x.parties===pa&&
+              x.stake===st&&
+              x.players.length<
+              x.capacity
+          );
+        }
+
+        if(!r){
+          r=
+            newRoom(
+              c,
+              pa,
+              st,
+              b.name,
+              d&&d.tableName
             );
         }
 
-        socket.roomId =
-          room.id;
+        s.roomId=
+          r.id;
 
-        socket.join(
-          room.id
+        s.join(
+          r.id
         );
 
-        room.players.push({
-          id:
-            socket.id,
+        r.players.push({
+          id:s.id,
 
-          name:
-            name,
+          name:b.name,
 
-          isBot:
-            false,
+          userKey:
+            b.userKey,
+
+          isBot:false,
 
           isTester:
-            tester,
+            key(b.name)===
+            TESTER,
 
           balance:
-            START_BALANCE,
+            b.balance,
 
-          stats:
-            createStats()
+          avatar:
+            b.avatar
         });
 
-        /*
-          saba123:
-          დარჩენილი ადგილები ბოტებით.
-        */
+        if(
+          b.userKey
+        ){
+          quest(
+            b.userKey,
+            'tables'
+          );
+        }
 
-        if (
-          tester
-        ) {
-          let botNumber =
-            1;
+        if(
+          key(b.name)===
+          TESTER
+        ){
+          let n=1;
 
-          while (
-            room.players.length <
-            room.capacity
-          ) {
-            room.players.push({
-              id:
-                makeId(
-                  'bot'
-                ),
+          while(
+            r.players.length<
+            r.capacity
+          ){
+            r.players.push({
+              id:id('bot'),
 
               name:
-                'BOT ' +
-                botNumber,
+                'BOT '+
+                n++,
 
-              isBot:
-                true,
+              isBot:true,
 
-              isTester:
-                false,
+              isTester:false,
 
               balance:
-                START_BALANCE,
+                START,
 
-              stats:
-                createStats()
+              avatar:
+                '🤖'
             });
-
-            botNumber++;
           }
         }
 
-        /*
-          თამაში იწყება ოთახის შევსებისას.
-        */
+        emitRooms();
 
-        if (
-          room.players.length ===
-          room.capacity
-        ) {
-          room.game =
-            startHand(
-              room,
+        if(
+          r.players.length===
+          r.capacity
+        ){
+          r.game=
+            newHand(
+              r,
               null
             );
 
-          /*
-            პირველი შემოსული იწყებს.
-          */
-
           setTurn(
-            room,
+            r,
             0
           );
 
-          broadcast(
-            room
-          );
+          broadcast(r);
 
-          io.to(
-            room.id
-          ).emit(
-            'sfxEvent',
-            {
-              type:
-                'deal'
-            }
-          );
-
-          scheduleBot(
-            room
-          );
-        } else {
-          io.to(
-            room.id
-          ).emit(
-            'waitingForPlayers',
-            {
-              current:
-                room.players.length,
-
-              max:
-                room.capacity,
-
-              stake:
-                room.stake
-            }
-          );
-        }
-      }
-    );
-
-    /* =====================================================
-       PLAY CARDS
-    ===================================================== */
-
-    socket.on(
-      'playCards',
-      function (data) {
-        const room =
-          socket.roomId
-            ? rooms.get(
-              socket.roomId
-            )
-            : null;
-
-        if (
-          !room ||
-          !room.game ||
-          room.game.processing ||
-          room.game.gameOver
-        ) {
-          return;
-        }
-
-        const activePlayer =
-          room.players[
-            room.game.currentTurnIndex
-          ];
-
-        if (
-          !activePlayer ||
-          activePlayer.id !==
-          socket.id
-        ) {
-          socket.emit(
-            'errorMessage',
-            'ახლა შენი სვლა არ არის.'
-          );
-
-          return;
-        }
-
-        const hand =
-          room.game.hands[
-            socket.id
-          ] ||
-          [];
-
-        let indexes =
-          Array.isArray(
-            data &&
-            data.cardIndices
-          )
-            ? Array.from(
-              new Set(
-                data.cardIndices
-              )
-            )
-            : [];
-
-        indexes =
-          indexes
-            .filter(
-              function (index) {
-                return (
-                  Number.isInteger(
-                    index
-                  )
-                  &&
-                  index >= 0
-                  &&
-                  index <
-                  hand.length
-                );
-              }
-            )
-            .sort(
-              function (a, b) {
-                return a - b;
+          io.to(r.id)
+            .emit(
+              'sfxEvent',
+              {
+                type:'deal'
               }
             );
 
-        const result =
-          applyPlay(
-            room,
-            activePlayer,
-            indexes
-          );
+          botSchedule(r);
+        }else{
+          io.to(r.id)
+            .emit(
+              'waitingForPlayers',
+              {
+                current:
+                  r.players.length,
 
-        if (
-          !result.ok
-        ) {
-          socket.emit(
+                max:
+                  r.capacity
+              }
+            );
+        }
+      }
+    );
+
+    s.on(
+      'playCards',
+      d=>{
+        let r=
+          s.roomId
+            ?rooms.get(
+              s.roomId
+            )
+            :null;
+
+        if(
+          !r||
+          !r.game
+        ){
+          return;
+        }
+
+        let p=
+          r.players[
+            r.game
+              .currentTurnIndex
+          ];
+
+        if(
+          !p||
+          p.id!==s.id
+        ){
+          return s.emit(
             'errorMessage',
-            result.message
+            'ახლა შენი სვლა არ არის.'
+          );
+        }
+
+        let h=
+          r.game.hands[
+            s.id
+          ]||
+          [];
+
+        let x=
+          Array.isArray(
+            d&&d.cardIndices
+          )
+            ?[
+              ...new Set(
+                d.cardIndices
+              )
+            ]
+            :[];
+
+        x=
+          x.filter(
+            i=>
+              Number.isInteger(i)
+              &&
+              i>=0
+              &&
+              i<h.length
+          )
+          .sort(
+            (a,b)=>
+              a-b
+          );
+
+        let v=
+          play(
+            r,
+            p,
+            x
+          );
+
+        if(!v.ok){
+          s.emit(
+            'errorMessage',
+            v.message
           );
         }
       }
     );
 
-    /* =====================================================
-       QUICK CHAT
-    ===================================================== */
-
-    socket.on(
+    s.on(
       'quickMessage',
-      function (data) {
-        const room =
-          socket.roomId
-            ? rooms.get(
-              socket.roomId
+      d=>{
+        let r=
+          s.roomId
+            ?rooms.get(
+              s.roomId
             )
-            : null;
+            :null;
 
-        if (
-          !room
-        ) {
-          return;
-        }
-
-        const player =
-          room.players.find(
-            function (item) {
-              return (
-                item.id ===
-                socket.id
-              );
-            }
+        let p=
+          r&&
+          r.players.find(
+            x=>x.id===s.id
           );
 
-        if (
-          !player
-        ) {
-          return;
-        }
-
-        const allowed = [
-          '⚡ სწრაფად!',
-          '⏳ მალდე!',
-          '👍 კარგი იყო',
-          '🃏 ვაჰ, კოზირი!'
-        ];
-
-        const text =
+        let text=
           String(
-            (
-              data &&
-              data.text
-            ) ||
+            d&&d.text||
             ''
           );
 
-        if (
-          !allowed.includes(
-            text
-          )
-        ) {
-          return;
+        if(
+          r&&
+          p&&
+          AUDIO.includes(text)
+        ){
+          io.to(r.id)
+            .emit(
+              'quickMessage',
+              {
+                playerId:p.id,
+                playerName:p.name,
+                text
+              }
+            );
         }
-
-        io.to(
-          room.id
-        ).emit(
-          'quickMessage',
-          {
-            playerId:
-              player.id,
-
-            playerName:
-              player.name,
-
-            text:
-              text
-          }
-        );
       }
     );
 
-    /* =====================================================
-       GIFTS
-    ===================================================== */
-
-    socket.on(
-      'sendGift',
-      function (data) {
-        const room =
-          socket.roomId
-            ? rooms.get(
-              socket.roomId
+    s.on(
+      'throwable',
+      d=>{
+        let r=
+          s.roomId
+            ?rooms.get(
+              s.roomId
             )
-            : null;
+            :null;
 
-        if (
-          !room
-        ) {
-          return;
-        }
-
-        const sender =
-          room.players.find(
-            function (player) {
-              return (
-                player.id ===
-                socket.id
-              );
-            }
+        let a=
+          r&&
+          r.players.find(
+            x=>x.id===s.id
           );
 
-        const targetId =
+        let b=
+          r&&
+          r.players.find(
+            x=>
+              x.id===
+              String(
+                d&&
+                d.targetPlayerId||
+                ''
+              )
+          );
+
+        let t=
           String(
-            (
-              data &&
-              data.targetPlayerId
-            ) ||
+            d&&d.type||
             ''
           );
 
-        const target =
-          room.players.find(
-            function (player) {
-              return (
-                player.id ===
-                targetId
-              );
-            }
-          );
-
-        const type =
-          String(
-            (
-              data &&
-              data.type
-            ) ||
-            ''
-          );
-
-        const allowed = [
-          'coffee',
-          'egg',
-          'clap',
-          'heart'
-        ];
-
-        if (
-          !sender ||
-          !target ||
-          sender.id ===
-          target.id ||
-          !allowed.includes(
-            type
-          )
-        ) {
-          return;
+        if(
+          r&&
+          a&&
+          b&&
+          a.id!==b.id
+          &&
+          [
+            'tomato',
+            'egg',
+            'paper'
+          ].includes(t)
+        ){
+          io.to(r.id)
+            .emit(
+              'throwableEvent',
+              {
+                fromPlayerId:a.id,
+                targetPlayerId:b.id,
+                type:t
+              }
+            );
         }
-
-        io.to(
-          room.id
-        ).emit(
-          'giftEvent',
-          {
-            fromPlayerId:
-              sender.id,
-
-            fromPlayerName:
-              sender.name,
-
-            targetPlayerId:
-              target.id,
-
-            type:
-              type
-          }
-        );
       }
     );
 
-    /* =====================================================
-       DISCONNECT
-    ===================================================== */
-
-    socket.on(
+    s.on(
       'disconnect',
-      function () {
-        const room =
-          socket.roomId
-            ? rooms.get(
-              socket.roomId
+      ()=>{
+        let r=
+          s.roomId
+            ?rooms.get(
+              s.roomId
             )
-            : null;
+            :null;
 
-        if (
-          !room
-        ) {
+        if(!r)
           return;
-        }
 
-        const remainingHumans =
-          room.players.filter(
-            function (player) {
-              return (
-                !player.isBot &&
-                player.id !==
-                socket.id
-              );
-            }
-          );
+        if(!r.game){
+          r.players=
+            r.players.filter(
+              p=>p.id!==s.id
+            );
 
-        if (
-          remainingHumans.length ===
-          0
-        ) {
+          if(
+            !r.players.length
+          ){
+            rooms.delete(
+              r.id
+            );
+          }
+        }else if(
+          !r.players.some(
+            p=>
+              !p.isBot&&
+              p.id!==s.id
+          )
+        ){
           clearTimeout(
-            room.timer
+            r.timer
           );
 
           rooms.delete(
-            room.id
+            r.id
           );
-
-          return;
         }
 
-        io.to(
-          room.id
-        ).emit(
-          'errorMessage',
-          'ერთ-ერთმა მოთამაშემ დატოვა მაგიდა.'
-        );
+        emitRooms();
       }
     );
   }
 );
 
-/* =========================================================
-   FRONTEND
-========================================================= */
-
-const PAGE = String.raw`
+const PAGE=String.raw`
 <!doctype html>
 
 <html lang="ka">
@@ -2779,1585 +2565,876 @@ const PAGE = String.raw`
 
 <meta
   name="viewport"
-  content="width=device-width,initial-scale=1,viewport-fit=cover"
+  content="width=device-width,initial-scale=1"
 >
 
-<title>Written Bura</title>
+<title>
+Written Bura
+</title>
 
 <script src="/socket.io/socket.io.js"></script>
 
 <style>
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Georgian:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;600;800&display=swap');
 
-* {
-  box-sizing: border-box;
+*{
+  box-sizing:border-box
 }
 
-:root {
-  --line: rgba(255,255,255,.11);
-  --gold: #e9c66d;
-  --gold2: #ffe79f;
-  --green: #32d49a;
-  --green2: #0eb980;
-  --muted: #9cafaa;
-  --felt: #0e6048;
-  --felt2: #07372c;
-}
-
-html,
-body {
-  margin: 0;
-  min-height: 100%;
+body{
+  margin:0;
+  background:#06100d;
+  color:#fff;
   font-family:
     'Noto Sans Georgian',
-    Inter,
-    sans-serif;
-  background: #050a08;
-  color: #eef7f2;
+    sans-serif
 }
 
 button,
 input,
-select {
-  font: inherit;
+select{
+  font:inherit
 }
 
-button {
-  -webkit-tap-highlight-color:
-    transparent;
-}
-
-body {
-  background:
-    radial-gradient(
-      circle at 50% -10%,
-      rgba(50,212,154,.17),
-      transparent 36%
-    ),
-    radial-gradient(
-      circle at 100% 20%,
-      rgba(233,198,109,.12),
-      transparent 28%
-    ),
-    linear-gradient(
-      160deg,
-      #030706,
-      #091512 52%,
-      #050b09
-    );
-
-  overflow-x:
-    hidden;
-}
-
-.glass {
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255,255,255,.075),
-      rgba(255,255,255,.025)
-    );
-
-  border:
-    1px solid var(--line);
-
+.glass{
+  background:#0c1714dd;
+  border:1px solid #ffffff1c;
+  border-radius:18px;
   box-shadow:
-    0 20px 60px
-    rgba(0,0,0,.30);
-
-  backdrop-filter:
-    blur(18px);
+    0 20px 50px #0007
 }
 
-/* =========================================================
-   LOBBY
-========================================================= */
-
-#lobby {
-  min-height: 100vh;
-  padding: 24px;
-  position: relative;
-  overflow: hidden;
+.hide{
+  display:none!important
 }
 
-#lobby:before {
-  content: '♠ ♥';
-  position: absolute;
-  left: -45px;
-  top: 65px;
-  font-size: 220px;
-  opacity: .03;
-  filter: blur(2px);
-  transform: rotate(-15deg);
-}
-
-#lobby:after {
-  content: '♦ ♣';
-  position: absolute;
-  right: -45px;
-  bottom: 30px;
-  font-size: 200px;
-  opacity: .03;
-  filter: blur(2px);
-  transform: rotate(12deg);
-}
-
-.shell {
-  width: min(1160px,100%);
-  margin: auto;
-  position: relative;
-  z-index: 2;
-}
-
-.top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 22px;
-}
-
-.brand {
-  font-weight: 800;
-  font-size: 24px;
-}
-
-.brand span {
-  color: var(--gold);
-}
-
-.testerHint {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.hero {
-  display: grid;
-  grid-template-columns:
-    1.2fr .8fr;
-  gap: 18px;
-}
-
-.heroCard,
-.joinCard {
-  padding: 28px;
-  border-radius: 24px;
-}
-
-.heroCard {
-  min-height: 335px;
-  position: relative;
-  overflow: hidden;
-}
-
-.heroCard:after {
-  content: '♠  ♣  ♦  ♥';
-  position: absolute;
-  right: 30px;
-  bottom: 25px;
-  font-size: 64px;
-  color:
-    rgba(255,255,255,.055);
-}
-
-.eyebrow {
-  display: inline-block;
-  padding: 7px 11px;
-  border-radius: 999px;
-  border:
-    1px solid
-    rgba(50,212,154,.25);
+#lobby{
+  min-height:100vh;
+  padding:20px;
   background:
-    rgba(50,212,154,.08);
-  color: #8cf2c7;
-  font-size: 10px;
-  font-weight: 800;
+    radial-gradient(
+      circle at top,
+      #123a2d,
+      #06100d 50%
+    )
 }
 
-.heroCard h1 {
-  font-size: 44px;
-  line-height: 1.08;
-  margin: 20px 0 12px;
+.wrap{
+  max-width:1180px;
+  margin:auto
 }
 
-.heroCard p {
-  color: var(--muted);
-  line-height: 1.7;
-  font-size: 13px;
+.top{
+  display:flex;
+  justify-content:space-between;
+  align-items:center
 }
 
-.field {
-  margin: 12px 0;
+.brand{
+  font-size:24px;
+  font-weight:800;
+  color:#f2d278
 }
 
-.field label {
-  display: block;
-  margin-bottom: 7px;
-  color: #bfd1c8;
-  font-size: 11px;
-  font-weight: 700;
+.tabs{
+  display:flex;
+  gap:8px;
+  margin:18px 0;
+  flex-wrap:wrap
+}
+
+.tabBtn,
+.smallBtn{
+  border:
+    1px solid #ffffff22;
+
+  background:
+    #ffffff0b;
+
+  color:#fff;
+
+  padding:
+    9px 13px;
+
+  border-radius:
+    999px;
+
+  cursor:pointer
+}
+
+.tabBtn.active{
+  border-color:#34d399;
+  background:#34d3991f
+}
+
+.tab{
+  display:none
+}
+
+.tab.active{
+  display:block
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:
+    1fr 360px;
+  gap:14px
+}
+
+.box{
+  padding:18px
+}
+
+.field{
+  margin:9px 0
+}
+
+.field label{
+  display:block;
+  font-size:11px;
+  color:#a8bbb3;
+  margin-bottom:5px
 }
 
 .field input,
-.field select {
-  width: 100%;
-  height: 45px;
-  padding: 0 12px;
-  color: #fff;
+.field select{
+  width:100%;
+  height:42px;
   border:
-    1px solid var(--line);
-  border-radius: 12px;
-  background:
-    rgba(0,0,0,.30);
-  outline: none;
+    1px solid #ffffff1c;
+  background:#0004;
+  color:#fff;
+  border-radius:10px;
+  padding:0 10px
 }
 
-.field input:focus,
-.field select:focus {
-  border-color:
-    rgba(50,212,154,.65);
-
-  box-shadow:
-    0 0 0 4px
-    rgba(50,212,154,.08);
-}
-
-.row2 {
-  display: grid;
+.row{
+  display:grid;
   grid-template-columns:
     1fr 1fr;
-  gap: 10px;
+  gap:8px
 }
 
-.primary {
-  width: 100%;
-  height: 48px;
-  border: 0;
-  border-radius: 13px;
+.stakes{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  margin:10px 0
+}
+
+.stake{
+  border:
+    1px solid #ffffff1c;
+  background:#ffffff0b;
+  color:#aaa;
+  padding:10px 14px;
+  border-radius:10px;
+  cursor:pointer
+}
+
+.stake.active{
+  color:#ffe29a;
+  border-color:#ffe29a
+}
+
+.primary{
+  width:100%;
+  height:44px;
+  border:0;
+  border-radius:11px;
   background:
     linear-gradient(
       135deg,
-      var(--green),
-      var(--green2)
+      #34d399,
+      #10b981
     );
-  color: #032319;
-  font-weight: 800;
-  cursor: pointer;
-  box-shadow:
-    0 14px 30px
-    rgba(14,185,128,.25);
+  font-weight:800;
+  color:#032319;
+  cursor:pointer
 }
 
-.primary:disabled {
-  opacity: .55;
-  cursor: wait;
+.list{
+  display:grid;
+  gap:8px
 }
 
-.wait {
-  min-height: 22px;
-  margin-top: 10px;
-  color: var(--gold2);
-  font-size: 11px;
-}
-
-.stakes {
-  display: grid;
-  grid-template-columns:
-    repeat(5,1fr);
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.stake {
-  padding: 16px;
+.item{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:center;
+  padding:11px;
   border:
-    1px solid var(--line);
-  border-radius: 16px;
-  background:
-    rgba(255,255,255,.035);
-  color: var(--muted);
-  cursor: pointer;
-  transition: .18s;
+    1px solid #ffffff18;
+  border-radius:12px;
+  background:#ffffff08
 }
 
-.stake:hover,
-.stake.active {
-  transform:
-    translateY(-4px)
-    scale(1.02);
-  color: var(--gold2);
-  border-color:
-    rgba(233,198,109,.58);
-  background:
-    rgba(233,198,109,.09);
-  box-shadow:
-    0 12px 26px
-    rgba(0,0,0,.28);
+.meta{
+  font-size:10px;
+  color:#9db1a8
 }
 
-.stake b {
-  display: block;
-  font-size: 20px;
-}
-
-.stake span {
-  font-size: 9px;
-}
-
-/* =========================================================
-   GAME HEADER
-========================================================= */
-
-#game {
-  display: none;
-  min-height: 100vh;
-  padding: 12px;
-}
-
-.gameShell {
-  width: min(1540px,100%);
-  margin: auto;
-}
-
-.gameTop {
-  display: grid;
+.avaGrid{
+  display:grid;
   grid-template-columns:
-    1fr auto auto;
-  gap: 10px;
-  align-items: center;
+    repeat(6,1fr);
+  gap:5px
 }
 
-.titleBox {
-  padding: 13px 15px;
-  border-radius: 15px;
-}
-
-.titleBox b {
-  font-size: 17px;
-}
-
-.titleBox span {
-  display: block;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.hud {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.hudBox {
-  min-width: 74px;
-  padding: 9px 10px;
-  text-align: center;
-  border-radius: 13px;
-}
-
-.hudBox small {
-  display: block;
-  color: var(--muted);
-  font-size: 8px;
-}
-
-.hudBox b {
-  font-size: 13px;
-  color: var(--gold2);
-}
-
-.topBtn {
-  height: 41px;
-  padding: 0 12px;
+.avaOpt{
+  height:40px;
+  background:#ffffff0b;
   border:
-    1px solid var(--line);
-  border-radius: 11px;
+    1px solid #ffffff18;
+  border-radius:9px;
+  font-size:21px;
+  cursor:pointer
+}
+
+.avaOpt.active{
+  border-color:#ffe29a
+}
+
+.quest{
+  padding:10px;
+  border:
+    1px solid #ffffff18;
+  border-radius:10px;
+  margin:7px 0
+}
+
+.bar{
+  height:6px;
+  background:#ffffff10;
+  border-radius:99px;
+  overflow:hidden
+}
+
+.bar span{
+  display:block;
+  height:100%;
   background:
-    rgba(255,255,255,.05);
-  color: #fff;
-  cursor: pointer;
+    linear-gradient(
+      90deg,
+      #34d399,
+      #ffe29a
+    )
 }
 
-.status {
-  min-height: 34px;
-  display: grid;
-  place-items: center;
-  color: var(--gold2);
-  font-weight: 800;
-  font-size: 12px;
+#game{
+  display:none;
+  min-height:100vh;
+  padding:10px
 }
 
-.layout {
-  display: grid;
+.hud{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+  justify-content:center;
+  margin-bottom:7px
+}
+
+.pill{
+  padding:7px 11px;
+  border-radius:999px;
+  background:#ffffff0d;
+  border:
+    1px solid #ffffff1c;
+  text-align:center;
+  min-width:82px
+}
+
+.pill small{
+  display:block;
+  font-size:8px;
+  color:#9db1a8
+}
+
+.pill b{
+  color:#ffe29a
+}
+
+.actions{
+  display:flex;
+  gap:6px;
+  justify-content:center;
+  margin-bottom:5px
+}
+
+.status{
+  text-align:center;
+  color:#ffe29a;
+  font-weight:800;
+  min-height:26px
+}
+
+.layout{
+  display:grid;
   grid-template-columns:
-    minmax(0,1fr)
-    290px;
-  gap: 12px;
+    1fr 290px;
+  gap:10px
 }
 
-/* =========================================================
-   TABLE
-========================================================= */
-
-.tableStage {
-  height: 720px;
-  position: relative;
-  overflow: hidden;
-  border-radius: 28px;
-  border:
-    1px solid var(--line);
-
+.table{
+  height:700px;
+  position:relative;
+  overflow:hidden;
+  border-radius:28px;
   background:
-    radial-gradient(
-      circle at 50% 10%,
-      rgba(255,255,255,.05),
-      transparent 28%
-    ),
     linear-gradient(
       145deg,
-      #1a120e,
+      #1b120d,
       #080a09
     );
-
   box-shadow:
-    0 28px 85px
-    rgba(0,0,0,.50);
+    0 25px 70px #000a
 }
 
-.tableWood {
-  position: absolute;
+.wood{
+  position:absolute;
   inset:
-    42px 62px 76px;
-
+    38px 55px 72px;
   border-radius:
-    50% / 39%;
-
+    50%/38%;
   background:
     linear-gradient(
       145deg,
-      #9a6741,
-      #593620 56%,
-      #2d1a11
+      #9b6841,
+      #52301d
     );
-
   box-shadow:
     inset 0 0 0 15px
-    rgba(44,23,13,.75),
-    inset 0 0 65px
-    rgba(0,0,0,.50),
-    0 28px 45px
-    rgba(0,0,0,.32);
+    #321c12cc
 }
 
-.felt {
-  position: absolute;
+.felt{
+  position:absolute;
   inset:
-    80px 105px 114px;
-
+    76px 98px 110px;
   border-radius:
-    50% / 39%;
+    50%/38%;
 
   background:
-    radial-gradient(
-      ellipse at 50% 44%,
-      rgba(255,255,255,.035),
-      transparent 22%
-    ),
     repeating-radial-gradient(
       circle at 35% 35%,
-      rgba(255,255,255,.018)
-      0 1px,
+      #fff2 0 1px,
       transparent 1px 4px
     ),
     radial-gradient(
       ellipse,
-      var(--felt),
-      var(--felt2) 75%
+      #0c6047,
+      #062e25 75%
     );
 
-  border:
-    3px solid
-    rgba(255,255,255,.07);
-
   box-shadow:
-    inset 0 0 95px
-    rgba(0,0,0,.52);
+    inset 0 0 100px #0009
 }
 
-.felt:after {
-  content:
-    'WRITTEN BURA';
-
-  position: absolute;
-  left: 50%;
-  top: 50%;
-
+.center{
+  position:absolute;
+  left:50%;
+  top:43%;
   transform:
     translate(-50%,-50%);
-
-  font-weight: 800;
-  letter-spacing: 8px;
-
-  color:
-    rgba(255,255,255,.045);
-
-  white-space: nowrap;
+  display:flex;
+  align-items:center;
+  gap:20px;
+  z-index:3
 }
 
-/* =========================================================
-   DECK / TRUMP
-========================================================= */
-
-.deckZone {
-  position: absolute;
-  left: 50%;
-  top: 43%;
-
-  transform:
-    translate(-50%,-50%);
-
-  display: flex;
-  gap: 18px;
-
-  z-index: 4;
-}
-
-.deckStack {
-  width: 58px;
-  height: 82px;
-
-  border-radius: 7px;
-
+.deck{
+  width:55px;
+  height:80px;
   border:
-    2px solid
-    rgba(255,255,255,.78);
-
+    2px solid #fff;
+  border-radius:7px;
   background:
     repeating-linear-gradient(
       45deg,
-      #213952 0 4px,
-      #13243a 4px 8px
-    );
-
-  box-shadow:
-    5px 5px 0
-    rgba(255,255,255,.12),
-    0 8px 20px
-    rgba(0,0,0,.35);
+      #203650 0 4px,
+      #132238 4px 8px
+    )
 }
 
-.deckLabel {
-  text-align: center;
-  color: var(--muted);
-  font-size: 9px;
-  margin-top: 4px;
-}
-
-.trumpSlot {
-  width: 58px;
-  height: 82px;
-}
-
-/* =========================================================
-   TABLE PLAYS
-========================================================= */
-
-.tableCards {
-  position: absolute;
-  left: 50%;
-  top: 56%;
-
-  transform:
-    translate(-50%,-50%);
-
-  z-index: 6;
-
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 9px;
-
-  max-width: 72%;
-}
-
-.playGroup {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.playName {
-  padding: 3px 7px;
-  border-radius: 999px;
-  background:
-    rgba(0,0,0,.42);
-  font-size: 8px;
-  margin-bottom: 4px;
-}
-
-.playGroup.winner .card {
-  box-shadow:
-    0 0 28px
-    rgba(255,225,150,.95);
-
-  border-color:
-    var(--gold2);
-}
-
-/* =========================================================
-   PLAYER
-========================================================= */
-
-.seat {
-  position: absolute;
-
-  transform:
-    translate(-50%,-50%);
-
-  width: 162px;
-
-  text-align: center;
-
-  z-index: 8;
-}
-
-.seatBox {
-  position: relative;
-
-  padding: 8px;
-
+.orb{
+  width:76px;
+  height:76px;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  font-size:42px;
   border:
-    1px solid var(--line);
-
-  border-radius: 16px;
-
-  background:
-    rgba(5,12,10,.84);
-
-  backdrop-filter:
-    blur(10px);
-}
-
-.seat.current .seatBox {
-  border-color:
-    var(--gold2);
-
-  box-shadow:
-    0 0 0 2px
-    rgba(233,198,109,.08),
-    0 0 28px
-    rgba(233,198,109,.32);
-
-  animation:
-    seatPulse
-    1.5s
-    ease-in-out
-    infinite;
-}
-
-.avatarWrap {
-  width: 58px;
-  height: 58px;
-  margin: auto;
-  position: relative;
-}
-
-.avatar {
-  position: absolute;
-  inset: 4px;
-
-  border-radius: 50%;
-
-  cursor: pointer;
-
+    2px solid #ffe29a;
   background:
     radial-gradient(
-      circle at 40% 30%,
-      #d9bca5,
-      #93644b 48%,
-      #2d1c16 49%
+      circle at 35% 30%,
+      #ffffff44,
+      #0007
     );
+  box-shadow:
+    0 0 28px #f0c65a88
+}
 
+.seat{
+  position:absolute;
+  transform:
+    translate(-50%,-50%);
+  width:150px;
+  text-align:center;
+  z-index:7
+}
+
+.seatBox{
+  position:relative;
+  background:#07110ee8;
   border:
-    3px solid
-    rgba(233,198,109,.70);
-
-  z-index: 2;
+    1px solid #ffffff1c;
+  border-radius:14px;
+  padding:7px
 }
 
-.frame-gold .avatar {
-  border-color:
-    #ffd86b;
-
+.seat.current .seatBox{
+  border-color:#ffe29a;
   box-shadow:
-    0 0 15px
-    rgba(255,216,107,.45);
+    0 0 24px #ffe29a66
 }
 
-.frame-diamond .avatar {
-  border-color:
-    #aeeeff;
-
-  box-shadow:
-    0 0 18px
-    rgba(174,238,255,.55);
+.avatarWrap{
+  width:58px;
+  height:58px;
+  margin:auto;
+  position:relative
 }
 
-.timerRing {
-  position: absolute;
-  inset: -2px;
+.avatar{
+  position:absolute;
+  inset:4px;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  background:#16221e;
+  border:
+    3px solid #d6a45d;
+  font-size:30px;
+  overflow:hidden;
+  cursor:pointer
+}
 
-  border-radius: 50%;
+.avatar img{
+  width:100%;
+  height:100%;
+  object-fit:cover
+}
 
+.ring{
+  position:absolute;
+  inset:-2px;
+  border-radius:50%;
   background:
     conic-gradient(
-      var(--gold)
-      var(--turn,0%),
-      rgba(255,255,255,.07)
-      0
-    );
-
-  filter:
-    drop-shadow(
-      0 0 8px
-      rgba(233,198,109,.38)
-    );
-
-  z-index: 1;
+      #ffe29a
+      var(--t,0%),
+      #ffffff10 0
+    )
 }
 
-.seatName {
-  margin-top: 5px;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.seatMeta {
-  color: var(--muted);
-  font-size: 8px;
-}
-
-.backs {
-  display: flex;
-  justify-content: center;
-  margin-top: 5px;
-}
-
-.back {
-  width: 17px;
-  height: 25px;
-
-  margin-left: -6px;
-
-  border-radius: 3px;
-
+.lvl{
+  position:absolute;
+  right:-7px;
+  bottom:-3px;
+  background:#111;
   border:
-    1px solid
-    rgba(255,255,255,.55);
-
-  background:
-    repeating-linear-gradient(
-      45deg,
-      #263c55 0 3px,
-      #14253a 3px 6px
-    );
+    1px solid #ffe29a;
+  border-radius:99px;
+  padding:2px 5px;
+  font-size:8px;
+  z-index:5
 }
 
-.back:first-child {
-  margin-left: 0;
+.frame-diamond .avatar{
+  border-color:#aeeeff;
+  box-shadow:
+    0 0 15px #aeeeff99
 }
 
-.reactionBubble {
-  position: absolute;
+.frame-gold .avatar{
+  border-color:#ffd86b;
+  box-shadow:
+    0 0 15px #ffd86b88
+}
 
-  top: -32px;
-  left: 50%;
+.name{
+  font-size:10px;
+  font-weight:800
+}
 
+.sm{
+  font-size:8px;
+  color:#9db1a8
+}
+
+.backs{
+  display:flex;
+  justify-content:center
+}
+
+.back{
+  width:16px;
+  height:24px;
+  margin-left:-6px;
+  border:
+    1px solid #fff8;
+  background:#18304b;
+  border-radius:3px
+}
+
+.handZone{
+  position:absolute;
+  left:50%;
+  bottom:12px;
   transform:
     translateX(-50%);
-
-  padding: 5px 8px;
-
-  border-radius: 9px;
-
-  background: white;
-  color: #111;
-
-  font-size: 9px;
-
-  white-space: nowrap;
-
-  animation:
-    bubble 2.5s forwards;
-
-  z-index: 20;
+  z-index:10;
+  width:94%;
+  text-align:center
 }
 
-.giftAnim {
-  position: absolute;
-
-  left: 50%;
-  top: 10px;
-
-  font-size: 34px;
-
-  z-index: 30;
-
-  pointer-events: none;
-
-  animation:
-    giftFly
-    1.6s
-    ease-out
-    forwards;
+.hand{
+  height:135px;
+  display:flex;
+  justify-content:center;
+  align-items:flex-end
 }
 
-/* =========================================================
-   PLAYER HAND
-========================================================= */
+.card{
+  width:68px;
+  height:100px;
+  background:#fff;
+  border-radius:9px;
+  padding:6px;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  font-weight:800;
+  color:#111;
+  box-shadow:
+    0 8px 18px #0007;
+  user-select:none
+}
 
-.handZone {
-  position: absolute;
-  left: 50%;
-  bottom: 14px;
+.hand .card{
+  margin-left:-17px;
+  transition:.18s
+}
 
+.hand .card:first-child{
+  margin-left:0
+}
+
+.hand .card:hover{
   transform:
-    translateX(-50%);
-
-  z-index: 12;
-
-  width:
-    min(900px,95%);
-
-  text-align: center;
+    translateY(-16px)!important
 }
 
-.hand {
-  height: 140px;
-
-  display: flex;
-
-  justify-content: center;
-
-  align-items: flex-end;
-}
-
-.hand .card {
-  margin-left: -18px;
-
-  position: relative;
-
-  transform-origin:
-    50% 116%;
-
-  transition:
-    transform .18s ease,
-    box-shadow .18s ease,
-    filter .18s ease;
-}
-
-.hand .card:first-child {
-  margin-left: 0;
-}
-
-.hand .card:hover {
+.hand .card.selected{
   transform:
-    translateY(-18px)
-    scale(1.045)
-    !important;
-
-  z-index: 50;
-}
-
-.hand .card.selected {
-  transform:
-    translateY(-28px)
-    scale(1.06)
-    !important;
+    translateY(-27px)
+    scale(1.05)!important;
 
   border:
-    3px solid
-    var(--gold2);
+    3px solid #ffe29a;
 
   box-shadow:
-    0 0 0 3px
-    rgba(255,231,159,.20),
-    0 0 25px
-    rgba(255,231,159,.58),
-    0 16px 30px
-    rgba(0,0,0,.40);
-
-  z-index: 60;
+    0 0 25px #ffe29aaa
 }
 
-.playBtn {
-  min-width: 220px;
-  height: 45px;
-
-  border: 0;
-
-  border-radius: 999px;
-
-  background:
-    linear-gradient(
-      135deg,
-      var(--green),
-      var(--green2)
-    );
-
-  color: #032319;
-
-  font-weight: 800;
-
-  cursor: pointer;
-
-  box-shadow:
-    0 12px 28px
-    rgba(14,185,128,.26);
+.ct{
+  text-align:center;
+  font-size:32px
 }
 
-.playBtn:disabled {
-  background:
-    #28332f;
-
-  color:
-    #75857f;
-
-  box-shadow:
-    none;
-
-  cursor:
-    not-allowed;
-}
-
-.selectedCount {
-  margin-top: 4px;
-
-  color: var(--muted);
-
-  font-size: 10px;
-}
-
-/* =========================================================
-   CARD
-========================================================= */
-
-.card {
-  width: 70px;
-  height: 102px;
-
-  padding: 6px;
-
-  display: flex;
-
-  flex-direction: column;
-
-  justify-content:
-    space-between;
-
-  border-radius: 10px;
-
-  background: #fff;
-
-  border:
-    1px solid
-    rgba(0,0,0,.18);
-
-  box-shadow:
-    0 8px 22px
-    rgba(0,0,0,.36);
-
-  font-weight: 900;
-
-  user-select: none;
-
-  cursor: pointer;
-}
-
-.cardTop,
-.cardBottom {
-  display: flex;
-  gap: 3px;
-  font-size: 13px;
-}
-
-.cardCenter {
-  text-align: center;
-  font-size: 34px;
-  line-height: 1;
-}
-
-.cardBottom {
+.cb{
   transform:
-    rotate(180deg);
+    rotate(180deg)
 }
 
-.suit-spades {
-  color: #070707;
+.spades{
+  color:#070707
 }
 
-.suit-clubs {
-  color: #007956;
-
-  background:
-    linear-gradient(
-      #fff,
-      #f0fbf6
-    );
+.clubs{
+  color:#007956
 }
 
-.suit-diamonds {
-  color: #082966;
-
-  background:
-    linear-gradient(
-      #fff,
-      #f1f5ff
-    );
+.diamonds{
+  color:#082966
 }
 
-.suit-hearts {
-  color: #74152d;
-
-  background:
-    linear-gradient(
-      #fff,
-      #fff1f4
-    );
+.hearts{
+  color:#74152d
 }
 
-/* =========================================================
-   SIDE PANELS
-========================================================= */
-
-.sidePanel {
-  border-radius: 18px;
-  margin-bottom: 10px;
-  overflow: hidden;
+.tableCards{
+  position:absolute;
+  left:50%;
+  top:57%;
+  transform:
+    translate(-50%,-50%);
+  display:flex;
+  gap:7px;
+  z-index:6
 }
 
-.panelHead {
-  width: 100%;
-
-  display: flex;
-
-  justify-content:
-    space-between;
-
-  align-items: center;
-
-  border: 0;
-
-  color: #fff;
-
-  background:
-    transparent;
-
-  padding: 13px 14px;
-
-  cursor: pointer;
-
-  font-weight: 800;
+.playGroup{
+  text-align:center
 }
 
-.panelHead small {
-  color: var(--muted);
+.playName{
+  font-size:8px;
+  background:#0008;
+  border-radius:99px;
+  padding:2px 6px
 }
 
-.panelBody {
-  padding:
-    0 14px 14px;
+.playGroup.win .card{
+  box-shadow:
+    0 0 25px #ffe29a
 }
 
-.panelBody.collapsed {
-  display: none;
+.playBtn{
+  height:44px;
+  min-width:220px;
+  border:0;
+  border-radius:99px;
+  background:#34d399;
+  font-weight:800;
+  color:#032319;
+  cursor:pointer
 }
 
-.scoreRow {
-  display: grid;
+.playBtn:disabled{
+  background:#29342f;
+  color:#73827b
+}
 
+.panel{
+  margin-bottom:8px;
+  padding:10px
+}
+
+.panelHead{
+  width:100%;
+  background:none;
+  border:0;
+  color:#fff;
+  text-align:left;
+  font-weight:800
+}
+
+.scoreRow{
+  display:grid;
   grid-template-columns:
-    34px 1fr 52px 54px;
-
-  gap: 5px;
-
-  align-items: center;
-
-  padding: 9px 5px;
-
+    30px 1fr 45px 50px;
+  gap:4px;
+  font-size:9px;
+  padding:7px;
   border-top:
-    1px solid var(--line);
-
-  font-size: 9px;
+    1px solid #ffffff14
 }
 
-.scoreRow.first {
-  background:
-    rgba(233,198,109,.07);
-
-  border-radius: 9px;
+.hist{
+  font-size:8px;
+  color:#b7c6bf;
+  padding:6px;
+  border-top:
+    1px solid #ffffff14
 }
 
-.scoreRow .last {
-  text-align: right;
-
-  color: var(--muted);
+.quick{
+  display:grid;
+  gap:5px
 }
 
-.scoreRow .total {
-  text-align: right;
-
-  color: var(--gold2);
-
-  font-weight: 800;
-
-  font-size: 12px;
-}
-
-.quickGrid {
-  display: grid;
-
-  grid-template-columns:
-    1fr 1fr;
-
-  gap: 6px;
-}
-
-.quickBtn {
-  border:
-    1px solid var(--line);
-
-  background:
-    rgba(255,255,255,.04);
-
-  color: #fff;
-
-  padding: 8px;
-
-  border-radius: 9px;
-
-  font-size: 9px;
-
-  cursor: pointer;
-}
-
-.quickBtn:hover {
-  border-color:
-    rgba(50,212,154,.50);
-}
-
-.testerHand {
-  padding: 8px;
-
-  margin-top: 7px;
-
-  border-radius: 9px;
-
-  background:
-    rgba(255,255,255,.04);
-
-  font-size: 9px;
-}
-
-.mini {
-  display: flex;
-
-  gap: 4px;
-
-  flex-wrap: wrap;
-
-  margin-top: 5px;
-}
-
-.mini span {
-  color: #111;
-
-  background: #fff;
-
-  padding: 3px 5px;
-
-  border-radius: 5px;
-}
-
-/* =========================================================
-   GIFTS MENU
-========================================================= */
-
-.giftMenu {
-  display: none;
-
-  position: fixed;
-
-  z-index: 999;
-
-  width: 175px;
-
-  padding: 10px;
-
-  border:
-    1px solid var(--line);
-
-  border-radius: 14px;
-
-  background:
-    rgba(7,14,12,.96);
-
-  box-shadow:
-    0 20px 50px
-    rgba(0,0,0,.50);
-}
-
-.giftMenu.show {
-  display: grid;
-
-  grid-template-columns:
-    1fr 1fr;
-
-  gap: 6px;
-}
-
-.giftBtn {
-  border:
-    1px solid var(--line);
-
-  background:
-    rgba(255,255,255,.05);
-
-  color: #fff;
-
-  border-radius: 9px;
-
-  padding: 9px;
-
-  cursor: pointer;
-}
-
-.giftBtn:hover {
-  background:
-    rgba(233,198,109,.10);
-
-  border-color:
-    rgba(233,198,109,.50);
-}
-
-/* =========================================================
-   ACHIEVEMENT
-========================================================= */
-
-.achievementToast {
-  position: fixed;
-
-  left: 50%;
-  top: 72px;
-
+.reaction{
+  position:absolute;
+  top:-28px;
+  left:50%;
   transform:
     translateX(-50%);
+  background:#fff;
+  color:#111;
+  border-radius:8px;
+  padding:4px 7px;
+  font-size:9px;
+  white-space:nowrap
+}
 
-  z-index: 1000;
-
-  min-width: 260px;
-
-  text-align: center;
-
-  padding: 13px 18px;
-
-  border-radius: 14px;
-
+.throwMenu{
+  display:none;
+  position:fixed;
+  z-index:50;
+  background:#09130f;
   border:
-    1px solid
-    rgba(255,220,120,.55);
-
-  background:
-    rgba(20,17,8,.96);
-
-  box-shadow:
-    0 15px 45px
-    rgba(0,0,0,.45),
-    0 0 30px
-    rgba(255,220,120,.18);
-
-  animation:
-    toastIn
-    3.7s
-    forwards;
+    1px solid #ffffff22;
+  border-radius:12px;
+  padding:8px
 }
 
-/* =========================================================
-   ANIMATIONS
-========================================================= */
-
-@keyframes seatPulse {
-  0%,
-  100% {
-    filter:
-      brightness(1);
-  }
-
-  50% {
-    filter:
-      brightness(1.18);
-  }
+.throwMenu.show{
+  display:grid;
+  gap:5px
 }
 
-@keyframes cardFly {
-  from {
-    opacity: 0;
-
-    transform:
-      translateY(65px)
-      scale(.76);
-  }
-
-  to {
-    opacity: 1;
-
-    transform:
-      translateY(0)
-      scale(1);
-  }
+.throwFly{
+  position:fixed;
+  z-index:60;
+  font-size:38px;
+  transition:
+    transform .75s ease
 }
 
-.playGroup .card {
-  animation:
-    cardFly
-    .4s
-    ease;
+.splat{
+  position:absolute;
+  inset:0;
+  z-index:8;
+  display:grid;
+  place-items:center;
+  font-size:40px
 }
 
-@keyframes bubble {
-  0% {
-    opacity: 0;
-
-    transform:
-      translate(-50%,8px);
-  }
-
-  15%,
-  80% {
-    opacity: 1;
-
-    transform:
-      translate(-50%,0);
-  }
-
-  100% {
-    opacity: 0;
-
-    transform:
-      translate(-50%,-8px);
-  }
+.paper{
+  position:absolute;
+  inset:-5px;
+  border:
+    8px dashed #fff;
+  z-index:8;
+  border-radius:50%
 }
 
-@keyframes giftFly {
-  0% {
-    opacity: 0;
+.modal{
+  display:none;
+  position:fixed;
+  inset:0;
+  background:#000b;
+  z-index:80;
+  place-items:center;
+  padding:15px
+}
 
-    transform:
-      translate(-50%,20px)
-      scale(.6)
-      rotate(-15deg);
+.modal.show{
+  display:grid
+}
+
+.modalBox{
+  max-width:720px;
+  max-height:88vh;
+  overflow:auto;
+  padding:18px
+}
+
+.rule{
+  padding:10px;
+  border:
+    1px solid #ffffff18;
+  border-radius:10px;
+  margin:7px 0
+}
+
+.toast{
+  position:fixed;
+  top:65px;
+  left:50%;
+  transform:
+    translateX(-50%);
+  z-index:90;
+  background:#181208;
+  border:
+    1px solid #ffe29a;
+  padding:12px 18px;
+  border-radius:12px
+}
+
+.tester{
+  font-size:9px;
+  margin:4px 0
+}
+
+.tester span{
+  background:#fff;
+  color:#111;
+  padding:2px 4px;
+  border-radius:4px;
+  margin:2px;
+  display:inline-block
+}
+
+@media(max-width:1000px){
+  .grid,
+  .layout{
+    grid-template-columns:1fr
   }
 
-  25% {
-    opacity: 1;
-  }
-
-  100% {
-    opacity: 0;
-
-    transform:
-      translate(-50%,-95px)
-      scale(1.45)
-      rotate(15deg);
+  .table{
+    height:620px
   }
 }
 
-@keyframes toastIn {
-  0% {
-    opacity: 0;
-
-    transform:
-      translate(-50%,-15px)
-      scale(.9);
+@media(max-width:600px){
+  #lobby{
+    padding:10px
   }
 
-  12%,
-  82% {
-    opacity: 1;
-
-    transform:
-      translate(-50%,0)
-      scale(1);
+  .row{
+    grid-template-columns:1fr
   }
 
-  100% {
-    opacity: 0;
-
-    transform:
-      translate(-50%,-12px)
-      scale(.97);
-  }
-}
-
-/* =========================================================
-   MOBILE
-========================================================= */
-
-@media(max-width:1100px) {
-  .layout {
-    grid-template-columns:
-      1fr;
+  .table{
+    height:540px
   }
 
-  .tableStage {
-    height: 660px;
-  }
-}
-
-@media(max-width:800px) {
-  #lobby {
-    padding: 14px;
-  }
-
-  .hero {
-    grid-template-columns:
-      1fr;
-  }
-
-  .heroCard h1 {
-    font-size: 35px;
-  }
-
-  .gameTop {
-    grid-template-columns:
-      1fr;
-  }
-
-  .tableStage {
-    height: 590px;
-  }
-
-  .tableWood {
+  .wood{
     inset:
-      38px 24px 70px;
+      28px 5px 60px
   }
 
-  .felt {
+  .felt{
     inset:
-      75px 53px 115px;
+      65px 25px 105px
   }
 
-  .seat {
-    width: 120px;
+  .seat{
+    width:95px
   }
 
-  .avatarWrap {
-    width: 48px;
-    height: 48px;
+  .avatarWrap{
+    width:44px;
+    height:44px
   }
 
-  .card {
-    width: 57px;
-    height: 85px;
+  .card{
+    width:49px;
+    height:73px;
+    padding:4px
   }
 
-  .cardCenter {
-    font-size: 27px;
+  .ct{
+    font-size:21px
   }
 
-  .tableCards {
-    max-width: 80%;
+  .tableCards{
+    gap:3px
   }
 
-  .stakes {
-    grid-template-columns:
-      repeat(3,1fr);
-  }
-}
-
-@media(max-width:520px) {
-  .heroCard,
-  .joinCard {
-    padding: 19px;
+  .hand{
+    height:100px
   }
 
-  .heroCard h1 {
-    font-size: 29px;
-  }
-
-  .row2 {
-    grid-template-columns:
-      1fr;
-  }
-
-  .stakes {
-    grid-template-columns:
-      1fr 1fr;
-  }
-
-  .tableStage {
-    height: 540px;
-  }
-
-  .tableWood {
-    inset:
-      30px 7px 64px;
-  }
-
-  .felt {
-    inset:
-      70px 27px 118px;
-  }
-
-  .seat {
-    width: 93px;
-  }
-
-  .avatarWrap {
-    width: 42px;
-    height: 42px;
-  }
-
-  .seatName {
-    font-size: 8px;
-  }
-
-  .seatMeta {
-    font-size: 6px;
-  }
-
-  .card {
-    width: 49px;
-    height: 73px;
-    padding: 4px;
-  }
-
-  .cardTop,
-  .cardBottom {
-    font-size: 9px;
-  }
-
-  .cardCenter {
-    font-size: 21px;
-  }
-
-  .hand {
-    height: 100px;
-  }
-
-  .hand .card {
-    margin-left: -15px;
-  }
-
-  .tableCards {
-    gap: 4px;
-    max-width: 88%;
-  }
-
-  .quickGrid {
-    grid-template-columns:
-      1fr;
+  .hand .card{
+    margin-left:-15px
   }
 }
 
@@ -4367,71 +3444,81 @@ body {
 
 <body>
 
-<!-- ======================================================
-     LOBBY
-======================================================= -->
-
 <section id="lobby">
 
-<div class="shell">
+<div class="wrap">
 
 <div class="top">
 
 <div class="brand">
-WRITTEN <span>BURA</span>
+WRITTEN BURA
 </div>
 
-<div class="testerHint">
-TEST MODE:
-<b>saba123</b>
-</div>
+<div id="profileMini"></div>
 
 </div>
 
-<div class="hero">
+<div class="tabs">
 
-<div class="heroCard glass">
+<button
+  class="tabBtn active"
+  data-tab="tablesTab"
+>
+🎴 მაგიდები
+</button>
 
-<div class="eyebrow">
-PREMIUM CARD ROOM
+<button
+  class="tabBtn"
+  data-tab="tourTab"
+>
+🏆 ტურნირები
+</button>
+
+<button
+  class="tabBtn"
+  data-tab="questTab"
+>
+📅 Daily Quests
+</button>
+
 </div>
 
-<h1>
-წერითი ბურა
-</h1>
+<div
+  id="tablesTab"
+  class="tab active"
+>
 
-<p>
-1-დან 5 კარტამდე ერთმასტიანი სვლა,
-4-კარტიანი კომბინაცია,
-5-კარტიანი მალიუტკა,
-20-წამიანი ტაიმერი,
-Live Score, XP/Level, Achievements,
-რეაქციები და საჩუქრები.
-</p>
+<div class="grid">
 
-</div>
-
-<div class="joinCard glass">
+<div class="box glass">
 
 <h2>
-მაგიდაზე შესვლა
+აქტიური მაგიდები
 </h2>
+
+<div
+  id="tableList"
+  class="list"
+></div>
+
+<h3>
+ახალი მაგიდა
+</h3>
 
 <div class="field">
 
 <label>
-მოთამაშის სახელი
+მაგიდის სახელი
 </label>
 
 <input
-  id="playerName"
-  value="saba123"
-  maxlength="20"
+  id="tableName"
+  placeholder="Tbilisi VIP"
 >
 
 </div>
 
-<div class="row2">
+<div class="row">
 
 <div class="field">
 
@@ -4440,15 +3527,8 @@ Live Score, XP/Level, Achievements,
 </label>
 
 <select id="capacity">
-
-<option value="3">
-3 მოთამაშე
-</option>
-
-<option value="4">
-4 მოთამაშე
-</option>
-
+<option>3</option>
+<option>4</option>
 </select>
 
 </div>
@@ -4460,23 +3540,10 @@ Live Score, XP/Level, Achievements,
 </label>
 
 <select id="parties">
-
-<option value="1">
-1 პარტია
-</option>
-
-<option value="2">
-2 პარტია
-</option>
-
-<option value="3">
-3 პარტია
-</option>
-
-<option value="4">
-4 პარტია
-</option>
-
+<option>1</option>
+<option>2</option>
+<option>3</option>
+<option>4</option>
 </select>
 
 </div>
@@ -4484,26 +3551,10 @@ Live Score, XP/Level, Achievements,
 </div>
 
 <input
-  type="hidden"
   id="stake"
+  type="hidden"
   value="5"
 >
-
-<button
-  id="joinButton"
-  class="primary"
->
-თამაშში შესვლა
-</button>
-
-<div
-  id="wait"
-  class="wait"
-></div>
-
-</div>
-
-</div>
 
 <div class="stakes">
 
@@ -4511,41 +3562,229 @@ Live Score, XP/Level, Achievements,
   class="stake active"
   data-stake="5"
 >
-<b>$5</b>
-<span>CLASSIC</span>
+$5
 </button>
 
 <button
   class="stake"
   data-stake="10"
 >
-<b>$10</b>
-<span>STANDARD</span>
+$10
 </button>
 
 <button
   class="stake"
   data-stake="25"
 >
-<b>$25</b>
-<span>PREMIUM</span>
+$25
 </button>
 
 <button
   class="stake"
   data-stake="50"
 >
-<b>$50</b>
-<span>VIP</span>
+$50
 </button>
 
 <button
   class="stake"
   data-stake="100"
 >
-<b>$100</b>
-<span>ELITE</span>
+$100
 </button>
+
+</div>
+
+<button
+  id="join"
+  class="primary"
+>
+შექმენი / შეუერთდი მაგიდას
+</button>
+
+<div
+  id="wait"
+  class="meta"
+></div>
+
+</div>
+
+<div class="box glass">
+
+<div class="tabs">
+
+<button
+  class="auth tabBtn active"
+  data-auth="loginBox"
+>
+შესვლა
+</button>
+
+<button
+  class="auth tabBtn"
+  data-auth="regBox"
+>
+რეგისტრაცია
+</button>
+
+</div>
+
+<div id="loginBox">
+
+<div class="field">
+
+<label>
+Username
+</label>
+
+<input
+  id="loginUser"
+  value="saba123"
+>
+
+</div>
+
+<div class="field">
+
+<label>
+Password
+</label>
+
+<input
+  id="loginPass"
+  type="password"
+>
+
+</div>
+
+<button
+  id="login"
+  class="primary"
+>
+შესვლა
+</button>
+
+<button
+  id="tester"
+  class="smallBtn"
+  style="
+    width:100%;
+    margin-top:6px
+  "
+>
+🧪 TESTER saba123
+</button>
+
+</div>
+
+<div
+  id="regBox"
+  class="hide"
+>
+
+<div class="field">
+
+<label>
+Username
+</label>
+
+<input id="regUser">
+
+</div>
+
+<div class="field">
+
+<label>
+Password
+</label>
+
+<input
+  id="regPass"
+  type="password"
+>
+
+</div>
+
+<div
+  id="avaGrid"
+  class="avaGrid"
+></div>
+
+<label
+  class="smallBtn"
+  style="
+    display:block;
+    text-align:center;
+    margin-top:6px
+  "
+>
+
+📷 ატვირთე ავატარი
+
+<input
+  id="avaUpload"
+  type="file"
+  accept="image/*"
+  class="hide"
+>
+
+</label>
+
+<button
+  id="register"
+  class="primary"
+  style="margin-top:7px"
+>
+რეგისტრაცია
+</button>
+
+</div>
+
+<div
+  id="authMsg"
+  class="meta"
+></div>
+
+</div>
+
+</div>
+
+</div>
+
+<div
+  id="tourTab"
+  class="tab"
+>
+
+<div class="box glass">
+
+<h2>
+ტურნირები
+</h2>
+
+<div
+  id="tourList"
+  class="list"
+></div>
+
+</div>
+
+</div>
+
+<div
+  id="questTab"
+  class="tab"
+>
+
+<div class="box glass">
+
+<h2>
+დღიური დავალებები
+</h2>
+
+<div id="questList"></div>
+
+</div>
 
 </div>
 
@@ -4553,74 +3792,94 @@ Live Score, XP/Level, Achievements,
 
 </section>
 
-<!-- ======================================================
-     GAME
-======================================================= -->
-
 <section id="game">
-
-<div class="gameShell">
-
-<div class="gameTop">
-
-<div class="titleBox glass">
-
-<b>
-WRITTEN BURA
-</b>
-
-<span id="tableSub">
-Live Table
-</span>
-
-</div>
 
 <div class="hud">
 
-<div class="hudBox glass">
-<small>პარტია</small>
-<b id="hudParty">-</b>
-</div>
+<div class="pill">
 
-<div class="hudBox glass">
-<small>ხელი</small>
-<b id="hudHand">-</b>
-</div>
+<small>
+🏆 პარტია
+</small>
 
-<div class="hudBox glass">
-<small>კოზირი</small>
-<b id="hudTrump">-</b>
-</div>
-
-<div class="hudBox glass">
-<small>დასტა</small>
-<b id="hudDeck">-</b>
-</div>
-
-<div class="hudBox glass">
-<small>ფსონი</small>
-<b id="hudStake">-</b>
-</div>
+<b id="party">
+-
+</b>
 
 </div>
 
-<div>
+<div class="pill">
+
+<small>
+🃏 ხელი
+</small>
+
+<b id="handNo">
+-
+</b>
+
+</div>
+
+<div class="pill">
+
+<small>
+⭐ კოზირი
+</small>
+
+<b id="trumpHud">
+-
+</b>
+
+</div>
+
+<div class="pill">
+
+<small>
+🎴 დასტა
+</small>
+
+<b id="deckNo">
+-
+</b>
+
+</div>
+
+<div class="pill">
+
+<small>
+💰 ფსონი
+</small>
+
+<b id="stakeHud">
+-
+</b>
+
+</div>
+
+</div>
+
+<div class="actions">
 
 <button
-  id="sfxBtn"
-  class="topBtn"
+  id="rules"
+  class="smallBtn"
+>
+📖 წესები
+</button>
+
+<button
+  id="sfx"
+  class="smallBtn"
 >
 🔊 SFX
 </button>
 
 <button
-  id="exitBtn"
-  class="topBtn"
+  id="exit"
+  class="smallBtn"
 >
 გასვლა
 </button>
-
-</div>
 
 </div>
 
@@ -4631,23 +3890,26 @@ Live Table
 
 <div class="layout">
 
-<div>
+<div class="table">
 
-<div class="tableStage">
-
-<div class="tableWood"></div>
+<div class="wood"></div>
 
 <div class="felt"></div>
 
-<div class="deckZone">
+<div class="center">
 
 <div>
 
-<div class="deckStack"></div>
+<div class="deck"></div>
 
-<div class="deckLabel">
+<div
+  class="meta"
+  style="text-align:center"
+>
 DECK
-<span id="centerDeck">36</span>
+<span id="deckCenter">
+36
+</span>
 </div>
 
 </div>
@@ -4655,11 +3917,16 @@ DECK
 <div>
 
 <div
-  id="trumpSlot"
-  class="trumpSlot"
-></div>
+  id="orb"
+  class="orb"
+>
+♠
+</div>
 
-<div class="deckLabel">
+<div
+  class="meta"
+  style="text-align:center"
+>
 კოზირი
 </div>
 
@@ -4682,7 +3949,7 @@ DECK
 ></div>
 
 <button
-  id="playBtn"
+  id="play"
   class="playBtn"
   disabled
 >
@@ -4690,8 +3957,8 @@ DECK
 </button>
 
 <div
-  id="selectedCount"
-  class="selectedCount"
+  id="selCount"
+  class="meta"
 >
 არჩეული: 0 / 5
 </div>
@@ -4700,101 +3967,70 @@ DECK
 
 </div>
 
-</div>
-
 <aside>
 
-<div class="sidePanel glass">
+<div class="panel glass">
 
-<button
-  class="panelHead"
-  data-target="scoreBody"
->
-<span>🏆 LIVE SCORE</span>
-<small>▼</small>
+<button class="panelHead">
+🏆 LIVE SCORE
 </button>
 
-<div
-  id="scoreBody"
-  class="panelBody"
->
 <div id="score"></div>
-</div>
+
+<div id="history"></div>
 
 </div>
 
-<div class="sidePanel glass">
+<div class="panel glass">
 
-<button
-  class="panelHead"
-  data-target="quickBody"
->
-<span>💬 რეაქციები</span>
-<small>▼</small>
+<button class="panelHead">
+🔊 Quick Audio
 </button>
 
-<div
-  id="quickBody"
-  class="panelBody"
->
-
-<div class="quickGrid">
+<div class="quick">
 
 <button
-  class="quickBtn"
-  data-message="⚡ სწრაფად!"
+  class="smallBtn qa"
+  data-q="სიქიიიიიმ!"
 >
-⚡ სწრაფად!
+სიქიიიიიმ!
 </button>
 
 <button
-  class="quickBtn"
-  data-message="⏳ მალდე!"
+  class="smallBtn qa"
+  data-q="ყვერო, მალე!"
 >
-⏳ მალდე!
+ყვერო, მალე!
 </button>
 
 <button
-  class="quickBtn"
-  data-message="👍 კარგი იყო"
+  class="smallBtn qa"
+  data-q="რას შვრები, ძმაო?!"
 >
-👍 კარგი იყო
+რას შვრები, ძმაო?!
 </button>
 
 <button
-  class="quickBtn"
-  data-message="🃏 ვაჰ, კოზირი!"
+  class="smallBtn qa"
+  data-q="ვაჰ, კოზირი!"
 >
-🃏 ვაჰ, კოზირი!
+ვაჰ, კოზირი!
 </button>
-
-</div>
 
 </div>
 
 </div>
 
 <div
-  id="testerPanel"
-  class="sidePanel glass"
+  id="testPanel"
+  class="panel glass"
 >
 
-<button
-  class="panelHead"
-  data-target="testerBody"
->
-<span>🧪 TEST MODE</span>
-<small>▼</small>
-</button>
+<b>
+🧪 TEST MODE
+</b>
 
-<div
-  id="testerBody"
-  class="panelBody"
->
-
-<div id="testerGrid"></div>
-
-</div>
+<div id="testGrid"></div>
 
 </div>
 
@@ -4802,1637 +4038,1789 @@ DECK
 
 </div>
 
-</div>
-
 </section>
 
-<!-- Gift menu -->
-
 <div
-  id="giftMenu"
-  class="giftMenu"
+  id="throwMenu"
+  class="throwMenu"
 >
 
 <button
-  class="giftBtn"
-  data-gift="coffee"
+  class="smallBtn throw"
+  data-t="tomato"
 >
-☕ ყავა
+🍅 პამიდორი
 </button>
 
 <button
-  class="giftBtn"
-  data-gift="egg"
+  class="smallBtn throw"
+  data-t="egg"
 >
 🥚 კვერცხი
 </button>
 
 <button
-  class="giftBtn"
-  data-gift="clap"
+  class="smallBtn throw"
+  data-t="paper"
 >
-👏 ტაში
+🧻 ქაღალდი
 </button>
 
-<button
-  class="giftBtn"
-  data-gift="heart"
+</div>
+
+<div
+  id="rulesModal"
+  class="modal"
 >
-❤️ გული
+
+<div class="modalBox glass">
+
+<button
+  id="closeRules"
+  class="smallBtn"
+  style="float:right"
+>
+✕
 </button>
+
+<h2>
+📖 წერითი ბურას წესები
+</h2>
+
+<div class="rule">
+
+<b>
+ქულები
+</b>
+
+<p>
+6/7/8/9=0,
+J=2,
+Q=3,
+K=4,
+10=10,
+A=11.
+0 წაღებული ქულა = -120.
+</p>
+
+</div>
+
+<div class="rule">
+
+<b>
+მრავალკარტიანი ჭრა
+</b>
+
+<p>
+თუ ჩამოსულია N კარტი
+(1-5),
+პასუხიც ზუსტად N კარტია.
+სისტემა ამოწმებს ყველა შესაძლო
+დაწყვილებას და ჭრას მაღალი
+იმავე მასტით ან კოზირით.
+</p>
+
+</div>
+
+<div class="rule">
+
+<b>
+4 კარტი
+</b>
+
+<p>
+პირველი სვლისას 4 კარტი
+შეიძლება, თუ ოთხივე ერთი
+მასტისაა.
+</p>
+
+</div>
+
+<div class="rule">
+
+<b>
+მალიუტკა
+</b>
+
+<p>
+5 ერთმასტიანი კარტი მალიუტკაა.
+დანარჩენები აგდებენ მთელ ხელს;
+თუ ვერავინ გაჭრა,
+ჩამსვლელი იღებს ამ სვლის
+ყველა ქულას.
+</p>
+
+</div>
+
+<div class="rule">
+
+<b>
+გახიშტვა და რიგი
+</b>
+
+<p>
+შემდეგ ხელს იწყებს ყველაზე
+ცოტა წაღებული ქულის მქონე
+მოთამაშის შემდეგი.
+
+თუ რამდენიმე გაიხიშტა,
+ბოლო ტრიკზე ბოლოს გახიშტულის
+შემდეგი იწყებს.
+</p>
+
+</div>
+
+</div>
 
 </div>
 
 <script>
 
-/* =========================================================
-   GLOBAL
-========================================================= */
+var socket=io();
 
-var socket =
-  io();
+var cur=null;
 
-var current =
-  null;
+var sel=[];
 
-var selected =
-  [];
+var prof=null;
 
-var sfxEnabled =
-  true;
+var ava='🦊';
 
-var timerFrame =
-  null;
+var upload='';
 
-var giftTargetId =
-  null;
+var target=null;
 
-function q(id) {
-  return document.getElementById(id);
-}
+var timer=null;
 
-function escapeHtml(value) {
-  return String(
-    value == null
-      ? ''
-      : value
+var sfxOn=true;
+
+const R=[
+  '6',
+  '7',
+  '8',
+  '9',
+  'J',
+  'Q',
+  'K',
+  '10',
+  'A'
+];
+
+const $=x=>
+  document.getElementById(x);
+
+const esc=s=>
+  String(
+    s??''
   )
-    .replace(
-      /&/g,
-      '&amp;'
-    )
-    .replace(
-      /</g,
-      '&lt;'
-    )
-    .replace(
-      />/g,
-      '&gt;'
-    )
-    .replace(
-      /"/g,
-      '&quot;'
-    )
-    .replace(
-      /'/g,
-      '&#039;'
-    );
-}
-
-function suitSymbol(suit) {
-  var map = {
-    spades:
-      '♠',
-
-    clubs:
-      '♣',
-
-    diamonds:
-      '♦',
-
-    hearts:
-      '♥'
-  };
-
-  return (
-    map[suit] ||
-    ''
+  .replace(
+    /&/g,
+    '&amp;'
+  )
+  .replace(
+    /</g,
+    '&lt;'
+  )
+  .replace(
+    />/g,
+    '&gt;'
+  )
+  .replace(
+    /"/g,
+    '&quot;'
   );
+
+const sym=s=>
+  ({
+    spades:'♠',
+    clubs:'♣',
+    diamonds:'♦',
+    hearts:'♥'
+  })[s]||'Ø';
+
+function avhtml(a){
+  return String(
+    a||''
+  ).startsWith(
+    'data:image/'
+  )
+    ?'<img src="'+
+      esc(a)+
+      '">'
+    :esc(a||'🦊');
 }
 
-function trumpText(trump) {
-  if (
-    trump ===
-    'no_trump'
-  ) {
-    return 'უკოზირო';
+function renderProf(){
+  $('profileMini')
+    .innerHTML=
+      prof
+        ?'<b>'+
+          avhtml(
+            prof.avatar
+          )+
+          ' '+
+          esc(
+            prof.username
+          )+
+          '</b>'+
+          '<div class="meta">'+
+          'Lv.'+
+          prof.level+
+          ' · '+
+          prof.xp+
+          'XP · '+
+          prof.wins+
+          'W'+
+          '</div>'
+        :'<span class="meta">'+
+          'სტუმარი'+
+          '</span>';
+
+  renderQuests();
+}
+
+function renderQuests(){
+  if(!prof){
+    $('questList')
+      .innerHTML=
+        '<div class="meta">'+
+        'ჯერ შედი პროფილში.'+
+        '</div>';
+
+    return;
   }
 
-  return suitSymbol(
-    trump
+  let q=
+    prof.quests||
+    {};
+
+  let a=[
+    [
+      'მოიგე 3 პარტია',
+      q.wins||0,
+      3,
+      100
+    ],
+    [
+      'ჩადი მალიუტკა 1-ხელ',
+      q.maliutka||0,
+      1,
+      250
+    ],
+    [
+      'ითამაშე 5 მაგიდაზე',
+      q.tables||0,
+      5,
+      50
+    ]
+  ];
+
+  $('questList')
+    .innerHTML=
+      a.map(
+        x=>
+          '<div class="quest">'+
+          '<b>'+
+          x[0]+
+          '</b>'+
+          '<div class="meta">'+
+          x[1]+
+          '/'+
+          x[2]+
+          ' · +'+
+          x[3]+
+          ' XP'+
+          '</div>'+
+          '<div class="bar">'+
+          '<span style="width:'+
+          Math.min(
+            100,
+            x[1]/
+            x[2]*
+            100
+          )+
+          '%">'+
+          '</span>'+
+          '</div>'+
+          '</div>'
+      )
+      .join('');
+}
+
+$('avaGrid')
+  .innerHTML=
+    [
+      '🦊',
+      '🐺',
+      '🦁',
+      '🐯',
+      '🐻',
+      '🦅',
+      '🐼',
+      '🐸',
+      '🐵',
+      '😎',
+      '🤠',
+      '🧙'
+    ]
+    .map(
+      (x,i)=>
+        '<button class="avaOpt '+
+        (
+          !i
+            ?'active'
+            :''
+        )+
+        '" data-a="'+
+        x+
+        '">'+
+        x+
+        '</button>'
+    )
+    .join('');
+
+document
+  .querySelectorAll(
+    '.avaOpt'
+  )
+  .forEach(
+    b=>
+      b.onclick=()=>{
+        document
+          .querySelectorAll(
+            '.avaOpt'
+          )
+          .forEach(
+            x=>
+              x.classList
+                .remove(
+                  'active'
+                )
+          );
+
+        b.classList
+          .add(
+            'active'
+          );
+
+        ava=
+          b.dataset.a;
+
+        upload='';
+      }
   );
-}
 
-/* =========================================================
-   SOCKET STATUS
-========================================================= */
+$('avaUpload')
+  .onchange=
+    function(){
+      let f=
+        this.files&&
+        this.files[0];
 
-socket.on(
-  'connect',
-  function () {
-    console.log(
-      'Socket connected:',
-      socket.id
-    );
+      if(!f)
+        return;
 
-    q('joinButton').disabled =
-      false;
-  }
-);
+      if(
+        f.size>
+        500000
+      ){
+        return $('authMsg')
+          .textContent=
+            'ავატარი მაქს. 500KB';
+      }
 
-socket.on(
-  'connect_error',
-  function (error) {
-    console.error(
-      'Socket error:',
-      error
-    );
+      let r=
+        new FileReader();
 
-    q('wait').textContent =
-      'სერვერთან კავშირი ვერ შედგა: ' +
-      error.message;
+      r.onload=()=>{
+        upload=
+          String(
+            r.result||
+            ''
+          );
 
-    q('joinButton').disabled =
-      false;
-  }
-);
+        $('authMsg')
+          .textContent=
+            'ავატარი მზადაა';
+      };
 
-/* =========================================================
-   LOBBY EVENTS
-========================================================= */
+      r.readAsDataURL(f);
+    };
+
+document
+  .querySelectorAll(
+    '.tabBtn[data-tab]'
+  )
+  .forEach(
+    b=>
+      b.onclick=()=>{
+        document
+          .querySelectorAll(
+            '.tabBtn[data-tab]'
+          )
+          .forEach(
+            x=>
+              x.classList
+                .remove(
+                  'active'
+                )
+          );
+
+        document
+          .querySelectorAll(
+            '.tab'
+          )
+          .forEach(
+            x=>
+              x.classList
+                .remove(
+                  'active'
+                )
+          );
+
+        b.classList
+          .add(
+            'active'
+          );
+
+        $(
+          b.dataset.tab
+        )
+        .classList
+        .add(
+          'active'
+        );
+      }
+  );
+
+document
+  .querySelectorAll(
+    '.auth'
+  )
+  .forEach(
+    b=>
+      b.onclick=()=>{
+        $('loginBox')
+          .classList
+          .toggle(
+            'hide',
+            b.dataset.auth!==
+            'loginBox'
+          );
+
+        $('regBox')
+          .classList
+          .toggle(
+            'hide',
+            b.dataset.auth!==
+            'regBox'
+          );
+
+        document
+          .querySelectorAll(
+            '.auth'
+          )
+          .forEach(
+            x=>
+              x.classList
+                .remove(
+                  'active'
+                )
+          );
+
+        b.classList
+          .add(
+            'active'
+          );
+      }
+  );
 
 document
   .querySelectorAll(
     '.stake'
   )
   .forEach(
-    function (button) {
-      button.addEventListener(
-        'click',
-        function () {
-          document
-            .querySelectorAll(
-              '.stake'
-            )
-            .forEach(
-              function (item) {
-                item
-                  .classList
-                  .remove(
-                    'active'
-                  );
-              }
-            );
-
-          button
-            .classList
-            .add(
-              'active'
-            );
-
-          q('stake').value =
-            button.getAttribute(
-              'data-stake'
-            );
-        }
-      );
-    }
-  );
-
-q('joinButton')
-  .addEventListener(
-    'click',
-    joinGame
-  );
-
-q('playBtn')
-  .addEventListener(
-    'click',
-    playSelected
-  );
-
-q('sfxBtn')
-  .addEventListener(
-    'click',
-    toggleSfx
-  );
-
-q('exitBtn')
-  .addEventListener(
-    'click',
-    function () {
-      window.location.reload();
-    }
-  );
-
-document
-  .querySelectorAll(
-    '.quickBtn'
-  )
-  .forEach(
-    function (button) {
-      button.addEventListener(
-        'click',
-        function () {
-          socket.emit(
-            'quickMessage',
-            {
-              text:
-                button.getAttribute(
-                  'data-message'
+    b=>
+      b.onclick=()=>{
+        document
+          .querySelectorAll(
+            '.stake'
+          )
+          .forEach(
+            x=>
+              x.classList
+                .remove(
+                  'active'
                 )
-            }
-          );
-        }
-      );
-    }
-  );
-
-/* =========================================================
-   COLLAPSIBLE PANELS
-========================================================= */
-
-document
-  .querySelectorAll(
-    '.panelHead'
-  )
-  .forEach(
-    function (button) {
-      button.addEventListener(
-        'click',
-        function () {
-          var targetId =
-            button.getAttribute(
-              'data-target'
-            );
-
-          var body =
-            q(
-              targetId
-            );
-
-          body
-            .classList
-            .toggle(
-              'collapsed'
-            );
-
-          var icon =
-            button.querySelector(
-              'small'
-            );
-
-          icon.textContent =
-            body
-              .classList
-              .contains(
-                'collapsed'
-              )
-                ? '▶'
-                : '▼';
-        }
-      );
-    }
-  );
-
-/* =========================================================
-   GIFTS
-========================================================= */
-
-document
-  .querySelectorAll(
-    '.giftBtn'
-  )
-  .forEach(
-    function (button) {
-      button.addEventListener(
-        'click',
-        function () {
-          if (
-            !giftTargetId
-          ) {
-            return;
-          }
-
-          socket.emit(
-            'sendGift',
-            {
-              targetPlayerId:
-                giftTargetId,
-
-              type:
-                button.getAttribute(
-                  'data-gift'
-                )
-            }
           );
 
-          closeGiftMenu();
-        }
-      );
-    }
+        b.classList
+          .add(
+            'active'
+          );
+
+        $('stake')
+          .value=
+            b.dataset.stake;
+      }
   );
 
-document.addEventListener(
-  'click',
-  function (event) {
-    if (
-      !event.target.closest(
-        '#giftMenu'
-      )
-      &&
-      !event.target.closest(
-        '.avatar'
-      )
-    ) {
-      closeGiftMenu();
-    }
+$('register')
+  .onclick=()=>
+    socket.emit(
+      'register',
+      {
+        username:
+          $('regUser')
+            .value,
+
+        password:
+          $('regPass')
+            .value,
+
+        avatar:
+          upload||
+          ava
+      }
+    );
+
+$('login')
+  .onclick=()=>
+    socket.emit(
+      'login',
+      {
+        username:
+          $('loginUser')
+            .value,
+
+        password:
+          $('loginPass')
+            .value
+      }
+    );
+
+$('tester')
+  .onclick=()=>
+    socket.emit(
+      'testerLogin'
+    );
+
+socket.on(
+  'authSuccess',
+  p=>{
+    prof=p;
+
+    $('authMsg')
+      .textContent=
+        'შესვლა წარმატებულია';
+
+    renderProf();
   }
 );
 
-/* =========================================================
-   JOIN
-========================================================= */
+socket.on(
+  'profileUpdate',
+  p=>{
+    prof=p;
 
-function joinGame() {
-  var name =
-    q('playerName')
-      .value
-      .trim();
+    renderProf();
+  }
+);
 
-  if (
-    !name
-  ) {
-    alert(
-      'შეიყვანე მოთამაშის სახელი.'
+socket.on(
+  'authError',
+  m=>
+    $('authMsg')
+      .textContent=m
+);
+
+function tables(a){
+  $('tableList')
+    .innerHTML=
+      a&&a.length
+        ?a.map(
+          t=>
+            '<div class="item">'+
+            '<div>'+
+            '<b>'+
+            esc(t.name)+
+            '</b>'+
+            '<div class="meta">'+
+            '$'+
+            t.stake+
+            ' · '+
+            t.players+
+            '/'+
+            t.capacity+
+            ' · '+
+            t.parties+
+            ' პარტია'+
+            '</div>'+
+            '</div>'+
+            '<button class="joinSmall" data-r="'+
+            t.id+
+            '">'+
+            'შეერთება'+
+            '</button>'+
+            '</div>'
+        )
+        .join('')
+        :'<div class="meta">'+
+         'ღია მაგიდა არ არის.'+
+         '</div>';
+
+  document
+    .querySelectorAll(
+      '.joinSmall[data-r]'
+    )
+    .forEach(
+      b=>
+        b.onclick=()=>
+          join(
+            b.dataset.r
+          )
+    );
+}
+
+socket.on(
+  'lobbyTables',
+  tables
+);
+
+function cd(ms){
+  if(ms<=0)
+    return'იწყება';
+
+  let s=
+    Math.floor(
+      ms/1000
     );
 
-    return;
+  let h=
+    Math.floor(
+      s/3600
+    );
+
+  let m=
+    Math.floor(
+      (
+        s%3600
+      )/60
+    );
+
+  return(
+    (
+      h
+        ?h+'ს '
+        :''
+    )+
+    m+
+    'წ '+
+    s%60+
+    'წმ'
+  );
+}
+
+socket.on(
+  'tournaments',
+  a=>{
+    window.ts=a;
+
+    function draw(){
+      $('tourList')
+        .innerHTML=
+          (
+            window.ts||
+            []
+          )
+          .map(
+            t=>
+              '<div class="item">'+
+              '<div>'+
+              '<b>'+
+              t.name+
+              '</b>'+
+              '<div class="meta">'+
+              t.prize+
+              ' · '+
+              t.registered+
+              '/'+
+              t.max+
+              '</div>'+
+              '</div>'+
+              '<div>'+
+              '<b>'+
+              cd(
+                t.startAt-
+                Date.now()
+              )+
+              '</b>'+
+              '<br>'+
+              '<button class="joinSmall tr" data-id="'+
+              t.id+
+              '">'+
+              'რეგისტრაცია'+
+              '</button>'+
+              '</div>'+
+              '</div>'
+          )
+          .join('');
+
+      document
+        .querySelectorAll(
+          '.tr'
+        )
+        .forEach(
+          b=>
+            b.onclick=()=>
+              socket.emit(
+                'registerTournament',
+                {
+                  id:b.dataset.id
+                }
+              )
+        );
+    }
+
+    draw();
+
+    setInterval(
+      draw,
+      1000
+    );
   }
+);
 
-  if (
-    !socket.connected
-  ) {
-    q('wait').textContent =
-      'სერვერთან დაკავშირებას ველოდებით...';
+socket.on(
+  'tournamentRegistered',
+  ()=>
+    $('authMsg')
+      .textContent=
+        'ტურნირზე დარეგისტრირდი'
+);
 
-    return;
-  }
+$('join')
+  .onclick=()=>
+    join(null);
 
-  q('joinButton').disabled =
-    true;
-
-  q('wait').textContent =
-    name.toLowerCase() ===
-    'saba123'
-      ? 'TEST მაგიდა მზადდება...'
-      : 'ვეძებთ მოთამაშეებს...';
-
+function join(roomId){
   socket.emit(
     'joinTable',
     {
       name:
-        name,
+        prof
+          ?prof.username
+          :(
+            $('loginUser')
+              .value||
+            'Guest'
+          ),
 
       capacity:
-        Number(
-          q('capacity').value
-        ),
+        +$('capacity')
+          .value,
 
       parties:
-        Number(
-          q('parties').value
-        ),
+        +$('parties')
+          .value,
 
       stake:
-        Number(
-          q('stake').value
-        )
+        +$('stake')
+          .value,
+
+      tableName:
+        $('tableName')
+          .value,
+
+      roomId
     }
   );
 }
 
-/* =========================================================
-   SOCKET GAME EVENTS
-========================================================= */
+$('rules')
+  .onclick=()=>
+    $('rulesModal')
+      .classList
+      .add(
+        'show'
+      );
+
+$('closeRules')
+  .onclick=()=>
+    $('rulesModal')
+      .classList
+      .remove(
+        'show'
+      );
+
+$('exit')
+  .onclick=()=>
+    location.reload();
+
+$('sfx')
+  .onclick=
+    function(){
+      sfxOn=
+        !sfxOn;
+
+      this.textContent=
+        sfxOn
+          ?'🔊 SFX'
+          :'🔇 SFX';
+    };
 
 socket.on(
   'waitingForPlayers',
-  function (data) {
-    q('wait').textContent =
-      'ველოდებით მოთამაშეებს: ' +
-      data.current +
-      ' / ' +
-      data.max;
-
-    q('joinButton').disabled =
-      true;
-  }
+  d=>
+    $('wait')
+      .textContent=
+        'ველოდებით: '+
+        d.current+
+        '/'+
+        d.max
 );
 
 socket.on(
   'errorMessage',
-  function (message) {
-    console.warn(
-      message
-    );
-
-    if (
-      q('game').style.display ===
-      'block'
-    ) {
-      q('status').textContent =
-        message;
-    } else {
-      q('wait').textContent =
-        message;
-
-      q('joinButton').disabled =
-        false;
-    }
-  }
+  m=>
+    cur
+      ?$('status')
+        .textContent=m
+      :$('wait')
+        .textContent=m
 );
 
 socket.on(
   'gameStateUpdate',
-  function (state) {
-    current =
-      state;
+  s=>{
+    cur=s;
 
-    selected =
-      [];
+    sel=[];
 
-    q('lobby').style.display =
-      'none';
+    $('lobby')
+      .style.display=
+        'none';
 
-    q('game').style.display =
-      'block';
+    $('game')
+      .style.display=
+        'block';
 
-    render(
-      state
-    );
-  }
-);
-
-socket.on(
-  'sfxEvent',
-  function (event) {
-    if (
-      event &&
-      event.type
-    ) {
-      playSfx(
-        event.type
-      );
-    }
-  }
-);
-
-socket.on(
-  'quickMessage',
-  function (message) {
-    showReaction(
-      message
-    );
-  }
-);
-
-socket.on(
-  'giftEvent',
-  function (event) {
-    showGift(
-      event
-    );
+    render(s);
   }
 );
 
 socket.on(
   'achievement',
-  function (achievement) {
-    showAchievement(
-      achievement
-    );
-  }
+  d=>
+    toast(
+      '🏅 '+
+      d.playerName+
+      ' — '+
+      d.title
+    )
 );
 
 socket.on(
   'gameWinner',
-  function (winner) {
-    showAchievement({
-      playerName:
-        winner.playerName,
-
-      title:
-        'თამაშის გამარჯვებული 🏆'
-    });
-  }
+  d=>
+    toast(
+      '🏆 '+
+      d.playerName+
+      ' — გამარჯვებული'
+    )
 );
 
-/* =========================================================
-   CARD UI
-========================================================= */
+socket.on(
+  'quickMessage',
+  react
+);
 
-function createCardElement(card) {
-  var element =
+socket.on(
+  'throwableEvent',
+  throwFx
+);
+
+socket.on(
+  'sfxEvent',
+  e=>
+    e&&
+    sound(e.type)
+);
+
+function card(c){
+  let e=
     document.createElement(
       'div'
     );
 
-  element.className =
-    'card suit-' +
-    card.suit;
+  let s=
+    sym(c.suit);
 
-  var symbol =
-    suitSymbol(
-      card.suit
-    );
+  e.className=
+    'card '+
+    c.suit;
 
-  element.innerHTML =
-    '<div class="cardTop">' +
-      '<span>' +
-        escapeHtml(
-          card.rank
-        ) +
-      '</span>' +
-      '<span>' +
-        symbol +
-      '</span>' +
-    '</div>' +
-
-    '<div class="cardCenter">' +
-      symbol +
-    '</div>' +
-
-    '<div class="cardBottom">' +
-      '<span>' +
-        escapeHtml(
-          card.rank
-        ) +
-      '</span>' +
-      '<span>' +
-        symbol +
-      '</span>' +
+  e.innerHTML=
+    '<div>'+
+    c.rank+
+    ' '+
+    s+
+    '</div>'+
+    '<div class="ct">'+
+    s+
+    '</div>'+
+    '<div class="cb">'+
+    c.rank+
+    ' '+
+    s+
     '</div>';
 
-  return element;
+  return e;
 }
 
-/* =========================================================
-   MAIN RENDER
-========================================================= */
-
-function render(state) {
-  q('tableSub').textContent =
-    state.capacity +
-    ' players · $' +
-    state.stake;
-
-  q('hudParty').textContent =
-    state.partyIndex +
-    ' / ' +
-    state.parties;
-
-  q('hudHand').textContent =
-    state.handIndex +
-    ' / ' +
-    state.totalHands;
-
-  q('hudTrump').textContent =
-    trumpText(
-      state.trump
+function pos(
+  i,
+  n,
+  me,
+  ps
+){
+  let mi=
+    ps.findIndex(
+      p=>p.id===me
     );
 
-  q('hudDeck').textContent =
-    state.deckCount;
+  if(mi<0)
+    mi=0;
 
-  q('centerDeck').textContent =
-    state.deckCount;
-
-  q('hudStake').textContent =
-    '$' +
-    state.stake;
-
-  renderTrump(
-    state.trump
-  );
-
-  renderPlayers(
-    state
-  );
-
-  renderTable(
-    state
-  );
-
-  renderHand(
-    state
-  );
-
-  renderScore(
-    state
-  );
-
-  renderTester(
-    state
-  );
-
-  updateStatus(
-    state
-  );
-
-  startTimerLoop();
-}
-
-/* =========================================================
-   TRUMP
-========================================================= */
-
-function renderTrump(trump) {
-  var slot =
-    q('trumpSlot');
-
-  slot.innerHTML =
-    '';
-
-  if (
-    trump ===
-    'no_trump'
-  ) {
-    var card =
-      document.createElement(
-        'div'
-      );
-
-    card.className =
-      'card';
-
-    card.style.display =
-      'grid';
-
-    card.style.placeItems =
-      'center';
-
-    card.style.color =
-      '#222';
-
-    card.style.fontSize =
-      '26px';
-
-    card.textContent =
-      'Ø';
-
-    slot.appendChild(
-      card
-    );
-
-    return;
-  }
-
-  slot.appendChild(
-    createCardElement({
-      rank:
-        'K',
-
-      suit:
-        trump
-    })
-  );
-}
-
-/* =========================================================
-   PLAYER POSITION
-========================================================= */
-
-function seatPosition(
-  index,
-  count,
-  myId,
-  players
-) {
-  var myIndex =
-    players.findIndex(
-      function (player) {
-        return (
-          player.id ===
-          myId
-        );
-      }
-    );
-
-  if (
-    myIndex < 0
-  ) {
-    myIndex =
-      0;
-  }
-
-  var relative =
+  let r=
     (
-      index -
-      myIndex +
-      count
-    ) %
-    count;
+      i-mi+n
+    )%n;
 
-  var positions3 = [
-    {
-      left: 50,
-      top: 84
-    },
-    {
-      left: 18,
-      top: 28
-    },
-    {
-      left: 82,
-      top: 28
-    }
-  ];
-
-  var positions4 = [
-    {
-      left: 50,
-      top: 84
-    },
-    {
-      left: 14,
-      top: 50
-    },
-    {
-      left: 50,
-      top: 16
-    },
-    {
-      left: 86,
-      top: 50
-    }
-  ];
-
-  return (
-    count === 4
-      ? positions4
-      : positions3
-  )[
-    relative
-  ];
+  return(
+    n===4
+      ?[
+        {l:50,t:84},
+        {l:14,t:50},
+        {l:50,t:16},
+        {l:86,t:50}
+      ]
+      :[
+        {l:50,t:84},
+        {l:18,t:28},
+        {l:82,t:28}
+      ]
+  )[r];
 }
 
-/* =========================================================
-   PLAYERS
-========================================================= */
+function render(s){
+  $('party')
+    .textContent=
+      s.partyIndex+
+      '/'+
+      s.parties;
 
-function renderPlayers(state) {
-  var root =
-    q('players');
+  $('handNo')
+    .textContent=
+      s.handIndex+
+      '/'+
+      s.totalHands;
 
-  root.innerHTML =
-    '';
+  $('trumpHud')
+    .textContent=
+      sym(s.trump);
 
-  state.players.forEach(
-    function (
-      player,
-      index
-    ) {
-      var pos =
-        seatPosition(
-          index,
-          state.players.length,
-          state.viewingPlayerId,
-          state.players
+  $('deckNo')
+    .textContent=
+      s.deckCount;
+
+  $('deckCenter')
+    .textContent=
+      s.deckCount;
+
+  $('stakeHud')
+    .textContent=
+      '$'+
+      s.stake;
+
+  let o=
+    $('orb');
+
+  o.textContent=
+    sym(s.trump);
+
+  o.style.color=
+    s.trump==='hearts'
+      ?'#8d1538'
+      :s.trump==='diamonds'
+        ?'#082966'
+        :s.trump==='clubs'
+          ?'#008461'
+          :s.trump==='spades'
+            ?'#111'
+            :'#ffe29a';
+
+  players(s);
+
+  table(s);
+
+  hand(s);
+
+  score(s);
+
+  tester(s);
+
+  status(s);
+
+  clock();
+}
+
+function players(s){
+  let r=
+    $('players');
+
+  r.innerHTML='';
+
+  s.players.forEach(
+    (p,i)=>{
+      let po=
+        pos(
+          i,
+          s.players.length,
+          s.viewingPlayerId,
+          s.players
         );
 
-      var seat =
+      let e=
         document.createElement(
           'div'
         );
 
-      seat.className =
-        'seat ' +
+      e.className=
+        'seat '+
         (
-          player.isCurrent
-            ? 'current '
-            : ''
-        ) +
-        'frame-' +
-        player.frame;
+          p.isCurrent
+            ?'current '
+            :''
+        )+
+        'frame-'+
+        p.frame;
 
-      seat.dataset.playerId =
-        player.id;
+      e.dataset.id=
+        p.id;
 
-      seat.style.left =
-        pos.left +
-        '%';
+      e.style.left=
+        po.l+'%';
 
-      seat.style.top =
-        pos.top +
-        '%';
+      e.style.top=
+        po.t+'%';
 
-      var backs =
-        '';
+      let backs=
+        p.id===
+        s.viewingPlayerId
+          ?''
+          :Array(
+            p.cardCount
+          )
+          .fill(
+            '<div class="back"></div>'
+          )
+          .join('');
 
-      if (
-        player.id !==
-        state.viewingPlayerId
-      ) {
-        for (
-          var i = 0;
-          i <
-          player.cardCount;
-          i++
-        ) {
-          backs +=
-            '<div class="back"></div>';
-        }
-      }
-
-      seat.innerHTML =
-        '<div class="seatBox">' +
-
-          '<div class="avatarWrap">' +
-            '<div class="timerRing"></div>' +
-            '<div class="avatar"></div>' +
-          '</div>' +
-
-          '<div class="seatName">' +
-            escapeHtml(
-              player.name
-            ) +
-            (
-              player.isBot
-                ? ' 🤖'
-                : ''
-            ) +
-          '</div>' +
-
-          '<div class="seatMeta">' +
-            'Lv.' +
-            player.level +
-            ' · XP ' +
-            player.xp +
-            ' · W ' +
-            player.wins +
-          '</div>' +
-
-          '<div class="seatMeta">' +
-            '💰 ' +
-            player.balance +
-            ' · hand ' +
-            player.handPoints +
-            ' · total ' +
-            player.totalPoints +
-          '</div>' +
-
-          '<div class="backs">' +
-            backs +
-          '</div>' +
-
+      e.innerHTML=
+        '<div class="seatBox">'+
+        '<div class="avatarWrap">'+
+        '<div class="ring"></div>'+
+        '<div class="avatar">'+
+        avhtml(p.avatar)+
+        '</div>'+
+        '<div class="lvl">'+
+        'Lv.'+
+        p.level+
+        '</div>'+
+        '</div>'+
+        '<div class="name">'+
+        esc(p.name)+
+        (
+          p.isBot
+            ?' 🤖'
+            :''
+        )+
+        '</div>'+
+        '<div class="sm">'+
+        p.xp+
+        'XP · '+
+        p.wins+
+        'W · '+
+        p.handPoints+
+        ' / '+
+        p.totalPoints+
+        '</div>'+
+        '<div class="backs">'+
+        backs+
+        '</div>'+
         '</div>';
 
-      var avatar =
-        seat.querySelector(
-          '.avatar'
-        );
+      e.querySelector(
+        '.avatar'
+      )
+      .onclick=
+        ev=>{
+          ev.stopPropagation();
 
-      avatar.addEventListener(
-        'click',
-        function (event) {
-          event.stopPropagation();
-
-          /*
-            საკუთარ თავზე საჩუქარი არა.
-          */
-
-          if (
-            player.id ===
-            state.viewingPlayerId
-          ) {
-            return;
+          if(
+            p.id!==
+            s.viewingPlayerId
+          ){
+            openThrow(
+              p.id,
+              ev.clientX,
+              ev.clientY
+            );
           }
+        };
 
-          openGiftMenu(
-            player.id,
-            event.clientX,
-            event.clientY
-          );
-        }
-      );
-
-      root.appendChild(
-        seat
-      );
+      r.appendChild(e);
     }
   );
 }
 
-/* =========================================================
-   TABLE
-========================================================= */
+function table(s){
+  let r=
+    $('tableCards');
 
-function renderTable(state) {
-  var root =
-    q('tableCards');
+  r.innerHTML='';
 
-  root.innerHTML =
-    '';
-
-  state.table.forEach(
-    function (play) {
-      var group =
+  s.table.forEach(
+    p=>{
+      let g=
         document.createElement(
           'div'
         );
 
-      group.className =
-        'playGroup' +
+      g.className=
+        'playGroup '+
         (
-          play.isWinning
-            ? ' winner'
-            : ''
+          p.isWinning
+            ?'win'
+            :''
         );
 
-      var name =
-        document.createElement(
-          'div'
-        );
+      g.innerHTML=
+        '<div class="playName">'+
+        esc(p.playerName)+
+        (
+          p.cut
+            ?' ✂️'
+            :''
+        )+
+        '</div>';
 
-      name.className =
-        'playName';
-
-      name.textContent =
-        play.playerName;
-
-      group.appendChild(
-        name
+      p.cards.forEach(
+        c=>
+          g.appendChild(
+            card(c)
+          )
       );
 
-      play.cards.forEach(
-        function (card) {
-          group.appendChild(
-            createCardElement(
-              card
-            )
-          );
-        }
-      );
-
-      root.appendChild(
-        group
-      );
+      r.appendChild(g);
     }
   );
 }
 
-/* =========================================================
-   MY HAND
-========================================================= */
+function hand(s){
+  let r=
+    $('myCards');
 
-function renderHand(state) {
-  var root =
-    q('myCards');
+  r.innerHTML='';
 
-  root.innerHTML =
-    '';
-
-  var cards =
-    state.playersCards[
-      state.viewingPlayerId
-    ] ||
+  let a=
+    s.playersCards[
+      s.viewingPlayerId
+    ]||
     [];
 
-  var middle =
+  let m=
     (
-      cards.length -
-      1
-    ) /
-    2;
+      a.length-1
+    )/2;
 
-  cards.forEach(
-    function (
-      card,
-      index
-    ) {
-      var element =
-        createCardElement(
-          card
+  a.forEach(
+    (c,i)=>{
+      let e=
+        card(c);
+
+      let d=
+        i-m;
+
+      e.style.transform=
+        'rotate('+
+        (
+          d*3.6
+        )+
+        'deg)';
+
+      e.onclick=()=>
+        toggle(
+          i,
+          e
         );
 
-      var delta =
-        index -
-        middle;
-
-      element.style.transform =
-        'rotate(' +
-        (
-          delta * 3.6
-        ) +
-        'deg) translateY(' +
-        (
-          Math.abs(
-            delta
-          ) * 1.7
-        ) +
-        'px)';
-
-      element.addEventListener(
-        'click',
-        function () {
-          toggleCard(
-            index,
-            element
-          );
-        }
-      );
-
-      root.appendChild(
-        element
-      );
+      r.appendChild(e);
     }
   );
 
-  updateSelectedCount();
-
-  updatePlayButton();
+  button();
 }
 
-/* =========================================================
-   SELECTION
-========================================================= */
+function toggle(i,e){
+  let x=
+    sel.indexOf(i);
 
-function toggleCard(
-  index,
-  element
-) {
-  var existing =
-    selected.indexOf(
-      index
-    );
-
-  if (
-    existing >= 0
-  ) {
-    selected.splice(
-      existing,
+  if(x>=0){
+    sel.splice(
+      x,
       1
     );
 
-    element.classList.remove(
-      'selected'
-    );
-  } else {
-    if (
-      selected.length >= 5
-    ) {
-      return;
-    }
+    e.classList
+      .remove(
+        'selected'
+      );
+  }else if(
+    sel.length<5
+  ){
+    sel.push(i);
 
-    selected.push(
-      index
-    );
-
-    element.classList.add(
-      'selected'
-    );
+    e.classList
+      .add(
+        'selected'
+      );
   }
 
-  playSfx(
+  sound(
     'select'
   );
 
-  updateSelectedCount();
-
-  updatePlayButton();
+  button();
 }
 
-function selectedCards() {
-  if (
-    !current
-  ) {
-    return [];
-  }
-
-  var hand =
-    current.playersCards[
-      current.viewingPlayerId
-    ] ||
+function selectedCards(){
+  let h=
+    cur.playersCards[
+      cur.viewingPlayerId
+    ]||
     [];
 
-  return selected
+  return sel
     .map(
-      function (index) {
-        return hand[index];
-      }
+      i=>h[i]
     )
-    .filter(
-      Boolean
-    );
+    .filter(Boolean);
 }
 
-function sameSuitClient(cards) {
-  if (
-    !cards.length
-  ) {
-    return false;
-  }
-
-  return cards.every(
-    function (card) {
-      return (
-        card.suit ===
-        cards[0].suit
-      );
-    }
+function sameC(a){
+  return(
+    !!a.length
+    &&
+    a.every(
+      c=>
+        c.suit===
+        a[0].suit
+    )
   );
 }
 
-/* =========================================================
-   CLIENT VALIDATION
-========================================================= */
+function cb(
+  a,
+  b,
+  t
+){
+  let at=
+    t!=='no_trump'
+    &&
+    a.suit===t;
 
-function selectionValidClient() {
-  if (
-    !current ||
-    !selected.length
-  ) {
+  let bt=
+    t!=='no_trump'
+    &&
+    b.suit===t;
+
+  if(
+    bt&&
+    !at
+  ){
+    return true;
+  }
+
+  if(
+    at&&
+    !bt
+  ){
     return false;
   }
 
-  var hand =
-    current.playersCards[
-      current.viewingPlayerId
-    ] ||
-    [];
-
-  var cards =
-    selectedCards();
-
-  if (
-    cards.length < 1 ||
-    cards.length > 5
-  ) {
+  if(
+    a.suit!==
+    b.suit
+  ){
     return false;
   }
 
-  var oneSuit =
-    sameSuitClient(
-      cards
-    );
-
-  /*
-    პირველი სვლა.
-  */
-
-  if (
-    current.table.length === 0
-  ) {
-    return oneSuit;
-  }
-
-  /*
-    მალიუტკაზე მთელი ხელი.
-  */
-
-  if (
-    current.leadWasMaliutka
-  ) {
-    return (
-      cards.length ===
-      hand.length
-    );
-  }
-
-  /*
-    ჩვეულებრივი პასუხი.
-  */
-
-  if (
-    cards.length !==
-    current.leadCount
-  ) {
-    return false;
-  }
-
-  var canSameSuit =
-    [
-      'spades',
-      'clubs',
-      'diamonds',
-      'hearts'
-    ].some(
-      function (suit) {
-        return (
-          hand.filter(
-            function (card) {
-              return (
-                card.suit ===
-                suit
-              );
-            }
-          ).length >=
-          current.leadCount
-        );
-      }
-    );
-
-  if (
-    canSameSuit
-  ) {
-    return oneSuit;
-  }
-
-  return true;
-}
-
-/* =========================================================
-   BUTTON TEXT
-========================================================= */
-
-function updateSelectedCount() {
-  var count =
-    selected.length;
-
-  q('selectedCount').textContent =
-    'არჩეული: ' +
-    count +
-    ' / 5';
-
-  var button =
-    q('playBtn');
-
-  if (
-    count === 5 &&
-    sameSuitClient(
-      selectedCards()
+  return(
+    R.indexOf(
+      b.rank
     )
-  ) {
-    button.textContent =
-      'ჩადი მალიუტკა!';
-  } else if (
-    count > 0
-  ) {
-    button.textContent =
-      'ჩადი ' +
-      count +
-      ' კარტი';
-  } else {
-    button.textContent =
-      'სვლის გაკეთება';
-  }
-}
-
-function updatePlayButton() {
-  var button =
-    q('playBtn');
-
-  if (
-    !current
-  ) {
-    button.disabled =
-      true;
-
-    return;
-  }
-
-  var active =
-    current.players[
-      current.currentTurnIndex
-    ];
-
-  button.disabled =
-    !active
-    ||
-    active.id !==
-      current.viewingPlayerId
-    ||
-    current.processing
-    ||
-    current.gameOver
-    ||
-    !selectionValidClient();
-}
-
-/* =========================================================
-   PLAY
-========================================================= */
-
-function playSelected() {
-  if (
-    !selectionValidClient()
-  ) {
-    alert(
-      'სვლა არასწორია. აირჩიე ერთი მასტის 1-5 კარტი; პასუხზე რაოდენობა უნდა ემთხვეოდეს, მალიუტკაზე კი მთელი ხელი უნდა ჩამოხვიდე.'
-    );
-
-    return;
-  }
-
-  socket.emit(
-    'playCards',
-    {
-      cardIndices:
-        selected.slice()
-    }
+    >
+    R.indexOf(
+      a.rank
+    )
   );
-
-  selected =
-    [];
-
-  updateSelectedCount();
 }
 
-/* =========================================================
-   STATUS
-========================================================= */
-
-function updateStatus(state) {
-  var element =
-    q('status');
-
-  if (
-    state.gameOver
-  ) {
-    element.textContent =
-      '🏆 თამაში დასრულებულია';
-
-    return;
+function comboC(
+  base,
+  ch,
+  t
+){
+  if(
+    base.length!==
+    ch.length
+  ){
+    return false;
   }
 
-  if (
-    state.processing
-  ) {
-    element.textContent =
-      '✨ კარტები ითვლება...';
+  let used=
+    Array(
+      ch.length
+    ).fill(false);
 
-    return;
-  }
-
-  var player =
-    state.players[
-      state.currentTurnIndex
-    ];
-
-  if (
-    !player
-  ) {
-    return;
-  }
-
-  if (
-    player.id ===
-    state.viewingPlayerId
-  ) {
-    if (
-      state.leadWasMaliutka &&
-      state.table.length
-    ) {
-      element.textContent =
-        '🔥 მალიუტკა! ჩადი მთელი ხელი';
-    } else {
-      element.textContent =
-        '🎯 შენი სვლაა';
-    }
-  } else if (
-    player.isBot
-  ) {
-    element.textContent =
-      '🤖 ' +
-      player.name +
-      ' თამაშობს...';
-  } else {
-    element.textContent =
-      player.name +
-      '-ის სვლაა';
-  }
-}
-
-/* =========================================================
-   SCORE
-========================================================= */
-
-function renderScore(state) {
-  var root =
-    q('score');
-
-  var last =
-    state.lastHandScores ||
-    {};
-
-  var players =
-    state.players
+  let b=
+    base
       .slice()
       .sort(
-        function (a, b) {
-          return (
-            (
-              b.totalPoints ||
-              0
-            )
-            -
-            (
-              a.totalPoints ||
-              0
-            )
-          );
-        }
+        (x,y)=>
+          R.indexOf(
+            y.rank
+          )
+          -
+          R.indexOf(
+            x.rank
+          )
       );
 
-  root.innerHTML =
-    '';
-
-  players.forEach(
-    function (
-      player,
-      index
-    ) {
-      var place =
-        index === 0
-          ? '🥇'
-          : index === 1
-            ? '🥈'
-            : index === 2
-              ? '🥉'
-              : '#' +
-                (
-                  index + 1
-                );
-
-      var lastScore =
-        typeof last[
-          player.id
-        ] ===
-        'number'
-          ? last[
-            player.id
-          ]
-          : '-';
-
-      var row =
-        document.createElement(
-          'div'
-        );
-
-      row.className =
-        'scoreRow' +
-        (
-          index === 0
-            ? ' first'
-            : ''
-        );
-
-      row.innerHTML =
-        '<div>' +
-          place +
-        '</div>' +
-
-        '<div>' +
-          escapeHtml(
-            player.name
-          ) +
-        '</div>' +
-
-        '<div class="last">' +
-          lastScore +
-        '</div>' +
-
-        '<div class="total">' +
-          player.totalPoints +
-        '</div>';
-
-      root.appendChild(
-        row
-      );
+  function f(i){
+    if(
+      i===b.length
+    ){
+      return true;
     }
-  );
-}
 
-/* =========================================================
-   TEST MODE
-========================================================= */
+    for(
+      let j=0;
+      j<ch.length;
+      j++
+    ){
+      if(
+        !used[j]
+        &&
+        cb(
+          b[i],
+          ch[j],
+          t
+        )
+      ){
+        used[j]=true;
 
-function renderTester(state) {
-  var panel =
-    q('testerPanel');
+        if(
+          f(i+1)
+        ){
+          return true;
+        }
 
-  var grid =
-    q('testerGrid');
+        used[j]=false;
+      }
+    }
 
-  if (
-    !state.revealAll
-  ) {
-    panel.style.display =
-      'none';
-
-    grid.innerHTML =
-      '';
-
-    return;
+    return false;
   }
 
-  panel.style.display =
-    'block';
+  return f(0);
+}
 
-  grid.innerHTML =
-    '';
+function winningCards(){
+  if(
+    !cur.table.length
+  ){
+    return[];
+  }
 
-  state.players.forEach(
-    function (player) {
-      var cards =
-        state.playersCards[
-          player.id
-        ] ||
-        [];
+  let w=0;
 
-      var block =
-        document.createElement(
-          'div'
-        );
-
-      block.className =
-        'testerHand';
-
-      var html =
-        '<b>' +
-        escapeHtml(
-          player.name
-        ) +
-        '</b>' +
-        '<div class="mini">';
-
-      cards.forEach(
-        function (card) {
-          html +=
-            '<span>' +
-              escapeHtml(
-                card.rank
-              ) +
-              suitSymbol(
-                card.suit
-              ) +
-            '</span>';
-        }
-      );
-
-      html +=
-        '</div>';
-
-      block.innerHTML =
-        html;
-
-      grid.appendChild(
-        block
-      );
+  for(
+    let i=1;
+    i<cur.table.length;
+    i++
+  ){
+    if(
+      comboC(
+        cur.table[w].cards,
+        cur.table[i].cards,
+        cur.trump
+      )
+    ){
+      w=i;
     }
+  }
+
+  return(
+    cur.table[w].cards
   );
 }
 
-/* =========================================================
-   TIMER
-========================================================= */
+function cuts(){
+  return(
+    !cur.table.length
+    ||
+    comboC(
+      winningCards(),
+      selectedCards(),
+      cur.trump
+    )
+  );
+}
 
-function startTimerLoop() {
-  if (
-    timerFrame
-  ) {
-    cancelAnimationFrame(
-      timerFrame
+/*
+  FRONTEND MULTI-CARD FIX
+
+  პირველი სვლისას:
+  1-5 ერთმასტიანი.
+
+  პასუხისას:
+  ზუსტად იმდენი კარტი,
+  რამდენიც leadCount-შია.
+*/
+function legal(){
+  if(
+    !cur||
+    !sel.length
+  ){
+    return false;
+  }
+
+  let h=
+    cur.playersCards[
+      cur.viewingPlayerId
+    ]||
+    [];
+
+  let a=
+    selectedCards();
+
+  if(
+    !cur.table.length
+  ){
+    return sameC(a);
+  }
+
+  if(
+    cur.leadWasMaliutka
+  ){
+    return(
+      a.length===
+      h.length
     );
   }
 
-  function tick() {
-    if (
-      !current
-    ) {
+  return(
+    a.length===
+    cur.leadCount
+  );
+}
+
+function button(){
+  let n=
+    sel.length;
+
+  let b=
+    $('play');
+
+  $('selCount')
+    .textContent=
+      'არჩეული: '+
+      n+
+      ' / 5';
+
+  if(
+    n===5
+    &&
+    sameC(
+      selectedCards()
+    )
+  ){
+    b.textContent=
+      'ჩადი მალიუტკა!';
+  }else if(
+    n
+    &&
+    cur
+    &&
+    cur.table.length
+    &&
+    n===cur.leadCount
+    &&
+    cuts()
+  ){
+    b.textContent=
+      '✂️ გაჭერი '+
+      n+
+      ' კარტით';
+  }else{
+    b.textContent=
+      n
+        ?'ჩადი '+
+         n+
+         ' კარტი'
+        :'სვლის გაკეთება';
+  }
+
+  let p=
+    cur&&
+    cur.players[
+      cur.currentTurnIndex
+    ];
+
+  b.disabled=
+    !cur
+    ||
+    !p
+    ||
+    p.id!==
+    cur.viewingPlayerId
+    ||
+    cur.processing
+    ||
+    cur.gameOver
+    ||
+    !legal();
+}
+
+$('play')
+  .onclick=()=>{
+    if(
+      !legal()
+    ){
       return;
     }
 
-    var remaining =
-      Math.max(
-        0,
-        current.turnEndsAt -
-        Date.now()
+    $('play')
+      .disabled=true;
+
+    socket.emit(
+      'playCards',
+      {
+        cardIndices:
+          sel.slice()
+      }
+    );
+
+    sel=[];
+  };
+
+function status(s){
+  let p=
+    s.players[
+      s.currentTurnIndex
+    ];
+
+  $('status')
+    .textContent=
+      s.gameOver
+        ?'🏆 თამაში დასრულებულია'
+        :s.processing
+          ?'✨ ითვლება...'
+          :p&&
+           p.id===
+           s.viewingPlayerId
+            ?(
+              s.leadWasMaliutka
+              &&
+              s.table.length
+                ?'🔥 მალიუტკა — ჩამოდი მთელი ხელით'
+                :s.table.length
+                  ?'🎯 აირჩიე ზუსტად '+
+                   s.leadCount+
+                   ' კარტი'
+                  :'🎯 შენი სვლაა'
+            )
+            :(
+              p
+                ?(
+                  p.isBot
+                    ?'🤖 '
+                    :''
+                )+
+                p.name+
+                ' თამაშობს...'
+                :''
+            );
+}
+
+function score(s){
+  let last=
+    s.lastHandScores||
+    {};
+
+  let a=
+    s.players
+      .slice()
+      .sort(
+        (x,y)=>
+          y.totalPoints-
+          x.totalPoints
       );
 
-    var percent =
+  $('score')
+    .innerHTML=
+      a.map(
+        (p,i)=>
+          '<div class="scoreRow">'+
+          '<div>'+
+          (
+            i===0
+              ?'🥇'
+              :i===1
+                ?'🥈'
+                :i===2
+                  ?'🥉'
+                  :'#'+
+                   (i+1)
+          )+
+          '</div>'+
+          '<div>'+
+          esc(p.name)+
+          '</div>'+
+          '<div>'+
+          (
+            last[p.id]??
+            '-'
+          )+
+          '</div>'+
+          '<b>'+
+          p.totalPoints+
+          '</b>'+
+          '</div>'
+      )
+      .join('');
+
+  $('history')
+    .innerHTML=
+      (
+        s.history||
+        []
+      )
+      .slice()
+      .reverse()
+      .map(
+        h=>
+          '<div class="hist">'+
+          '<b>'+
+          'Round '+
+          h.hand+
+          ' ('+
+          sym(h.trump)+
+          ')'+
+          '</b>'+
+          '<br>'+
+          s.players
+            .map(
+              p=>
+                esc(p.name)+
+                ': '+
+                (
+                  (
+                    h.rawScores
+                    &&
+                    h.rawScores[p.id]
+                  )
+                  ??
+                  0
+                )+
+                'pt'
+            )
+            .join(
+              ' · '
+            )+
+          '</div>'
+      )
+      .join('');
+}
+
+function tester(s){
+  $('testPanel')
+    .classList
+    .toggle(
+      'hide',
+      !s.revealAll
+    );
+
+  if(
+    !s.revealAll
+  ){
+    return;
+  }
+
+  $('testGrid')
+    .innerHTML=
+      s.players
+        .map(
+          p=>
+            '<div class="tester">'+
+            '<b>'+
+            esc(p.name)+
+            '</b>'+
+            '<br>'+
+            (
+              s.playersCards[p.id]||
+              []
+            )
+            .map(
+              c=>
+                '<span>'+
+                c.rank+
+                sym(c.suit)+
+                '</span>'
+            )
+            .join('')+
+            '</div>'
+        )
+        .join('');
+}
+
+function clock(){
+  cancelAnimationFrame(
+    timer
+  );
+
+  function t(){
+    if(!cur)
+      return;
+
+    let pc=
       Math.max(
         0,
         Math.min(
           100,
           (
-            remaining /
-            (
-              current.turnSeconds *
-              1000
-            )
-          ) *
+            cur.turnEndsAt-
+            Date.now()
+          )
+          /
+          (
+            cur.turnSeconds*
+            1000
+          )
+          *
           100
         )
       );
@@ -6442,441 +5830,414 @@ function startTimerLoop() {
         '.seat'
       )
       .forEach(
-        function (seat) {
-          var ring =
-            seat.querySelector(
-              '.timerRing'
+        e=>{
+          let r=
+            e.querySelector(
+              '.ring'
             );
 
-          if (
-            !ring
-          ) {
-            return;
+          if(r){
+            r.style
+              .setProperty(
+                '--t',
+                e.classList
+                  .contains(
+                    'current'
+                  )
+                  ?pc+'%'
+                  :'0%'
+              );
           }
-
-          ring.style.setProperty(
-            '--turn',
-            seat
-              .classList
-              .contains(
-                'current'
-              )
-                ? percent + '%'
-                : '0%'
-          );
         }
       );
 
-    timerFrame =
+    timer=
       requestAnimationFrame(
-        tick
+        t
       );
   }
 
-  tick();
+  t();
 }
 
-/* =========================================================
-   QUICK REACTION
-========================================================= */
+function seatBox(id){
+  let e=[
+    ...document
+      .querySelectorAll(
+        '.seat'
+      )
+  ]
+  .find(
+    x=>
+      x.dataset.id===
+      id
+  );
 
-function showReaction(message) {
-  if (
-    !message
-  ) {
-    return;
-  }
-
-  var seatBox =
-    null;
-
-  document
-    .querySelectorAll(
-      '.seat'
+  return(
+    e&&
+    e.querySelector(
+      '.seatBox'
     )
-    .forEach(
-      function (seat) {
-        if (
-          seat.dataset.playerId ===
-          message.playerId
-        ) {
-          seatBox =
-            seat.querySelector(
-              '.seatBox'
-            );
-        }
-      }
+  );
+}
+
+function react(m){
+  let b=
+    seatBox(
+      m.playerId
     );
 
-  if (
-    !seatBox
-  ) {
+  if(!b)
     return;
-  }
 
-  seatBox
-    .querySelectorAll(
-      '.reactionBubble'
-    )
-    .forEach(
-      function (item) {
-        item.remove();
-      }
-    );
-
-  var bubble =
+  let e=
     document.createElement(
       'div'
     );
 
-  bubble.className =
-    'reactionBubble';
+  e.className=
+    'reaction';
 
-  bubble.textContent =
-    message.text;
+  e.textContent=
+    m.text;
 
-  seatBox.appendChild(
-    bubble
-  );
+  b.appendChild(e);
 
   setTimeout(
-    function () {
-      bubble.remove();
-    },
+    ()=>e.remove(),
     2500
   );
 }
 
-/* =========================================================
-   GIFTS
-========================================================= */
+document
+  .querySelectorAll(
+    '.qa'
+  )
+  .forEach(
+    b=>
+      b.onclick=()=>{
+        socket.emit(
+          'quickMessage',
+          {
+            text:b.dataset.q
+          }
+        );
 
-function openGiftMenu(
-  playerId,
+        voice(
+          b.dataset.q
+        );
+      }
+  );
+
+function openThrow(
+  id,
   x,
   y
-) {
-  giftTargetId =
-    playerId;
+){
+  target=id;
 
-  var menu =
-    q('giftMenu');
+  let m=
+    $('throwMenu');
 
-  menu.style.left =
+  m.style.left=
     Math.min(
       x,
-      window.innerWidth - 190
-    ) +
+      innerWidth-
+      190
+    )+
     'px';
 
-  menu.style.top =
+  m.style.top=
     Math.min(
       y,
-      window.innerHeight - 145
-    ) +
+      innerHeight-
+      150
+    )+
     'px';
 
-  menu.classList.add(
-    'show'
-  );
-}
-
-function closeGiftMenu() {
-  giftTargetId =
-    null;
-
-  q('giftMenu')
-    .classList
-    .remove(
+  m.classList
+    .add(
       'show'
     );
 }
 
-function giftEmoji(type) {
-  var gifts = {
-    coffee:
-      '☕',
+document
+  .querySelectorAll(
+    '.throw'
+  )
+  .forEach(
+    b=>
+      b.onclick=()=>{
+        if(target){
+          socket.emit(
+            'throwable',
+            {
+              targetPlayerId:
+                target,
 
-    egg:
-      '🥚',
-
-    clap:
-      '👏',
-
-    heart:
-      '❤️'
-  };
-
-  return (
-    gifts[type] ||
-    '✨'
-  );
-}
-
-function showGift(event) {
-  if (
-    !event
-  ) {
-    return;
-  }
-
-  var seatBox =
-    null;
-
-  document
-    .querySelectorAll(
-      '.seat'
-    )
-    .forEach(
-      function (seat) {
-        if (
-          seat.dataset.playerId ===
-          event.targetPlayerId
-        ) {
-          seatBox =
-            seat.querySelector(
-              '.seatBox'
-            );
+              type:
+                b.dataset.t
+            }
+          );
         }
+
+        $('throwMenu')
+          .classList
+          .remove(
+            'show'
+          );
+
+        target=null;
       }
+  );
+
+document
+  .addEventListener(
+    'click',
+    e=>{
+      if(
+        !e.target.closest(
+          '#throwMenu'
+        )
+        &&
+        !e.target.closest(
+          '.avatar'
+        )
+      ){
+        $('throwMenu')
+          .classList
+          .remove(
+            'show'
+          );
+      }
+    }
+  );
+
+function throwFx(e){
+  let a=
+    seatBox(
+      e.fromPlayerId
     );
 
-  if (
-    !seatBox
-  ) {
+  let b=
+    seatBox(
+      e.targetPlayerId
+    );
+
+  if(
+    !a||
+    !b
+  ){
     return;
   }
 
-  var gift =
+  let ar=
+    a.getBoundingClientRect();
+
+  let br=
+    b.getBoundingClientRect();
+
+  let f=
     document.createElement(
       'div'
     );
 
-  gift.className =
-    'giftAnim';
+  f.className=
+    'throwFly';
 
-  gift.textContent =
-    giftEmoji(
-      event.type
-    );
+  f.textContent=
+    e.type==='tomato'
+      ?'🍅'
+      :e.type==='egg'
+        ?'🥚'
+        :'🧻';
 
-  seatBox.appendChild(
-    gift
+  f.style.left=
+    (
+      ar.left+
+      ar.width/2
+    )+
+    'px';
+
+  f.style.top=
+    (
+      ar.top+
+      ar.height/2
+    )+
+    'px';
+
+  document.body
+    .appendChild(f);
+
+  requestAnimationFrame(
+    ()=>
+      f.style.transform=
+        'translate('+
+        (
+          br.left-
+          ar.left
+        )+
+        'px,'+
+        (
+          br.top-
+          ar.top
+        )+
+        'px) rotate(360deg)'
   );
 
-  playSfx(
+  setTimeout(
+    ()=>{
+      f.remove();
+
+      let z=
+        document.createElement(
+          'div'
+        );
+
+      z.className=
+        e.type==='paper'
+          ?'paper'
+          :'splat';
+
+      if(
+        e.type!==
+        'paper'
+      ){
+        z.textContent=
+          e.type===
+          'tomato'
+            ?'🍅'
+            :'🍳';
+      }
+
+      b.appendChild(z);
+
+      setTimeout(
+        ()=>z.remove(),
+        3000
+      );
+    },
+    760
+  );
+
+  sound(
     'gift'
   );
-
-  setTimeout(
-    function () {
-      gift.remove();
-    },
-    1700
-  );
 }
 
-/* =========================================================
-   ACHIEVEMENT
-========================================================= */
-
-function showAchievement(data) {
-  if (
-    !data
-  ) {
-    return;
-  }
-
-  var toast =
+function toast(t){
+  let e=
     document.createElement(
       'div'
     );
 
-  toast.className =
-    'achievementToast';
+  e.className=
+    'toast';
 
-  toast.innerHTML =
-    '🏅 <b>' +
-    escapeHtml(
-      data.playerName
-    ) +
-    '</b><br>' +
-    escapeHtml(
-      data.title
-    );
+  e.textContent=t;
 
-  document.body.appendChild(
-    toast
-  );
-
-  playSfx(
-    'achievement'
-  );
+  document.body
+    .appendChild(e);
 
   setTimeout(
-    function () {
-      toast.remove();
-    },
-    3700
+    ()=>e.remove(),
+    3300
   );
 }
 
-/* =========================================================
-   SFX
-========================================================= */
-
-function toggleSfx() {
-  sfxEnabled =
-    !sfxEnabled;
-
-  q('sfxBtn').textContent =
-    sfxEnabled
-      ? '🔊 SFX'
-      : '🔇 SFX';
-}
-
-function playSfx(type) {
-  if (
-    !sfxEnabled
-  ) {
+function voice(t){
+  if(!sfxOn)
     return;
-  }
 
-  try {
-    var AudioContextClass =
-      window.AudioContext ||
-      window.webkitAudioContext;
-
-    if (
-      !AudioContextClass
-    ) {
-      return;
-    }
-
-    var context =
-      new AudioContextClass();
-
-    var oscillator =
-      context.createOscillator();
-
-    var gain =
-      context.createGain();
-
-    oscillator.connect(
-      gain
-    );
-
-    gain.connect(
-      context.destination
-    );
-
-    var frequency =
-      440;
-
-    var duration =
-      .05;
-
-    if (
-      type ===
-      'select'
-    ) {
-      frequency =
-        650;
-
-      duration =
-        .035;
-    } else if (
-      type ===
-      'deal'
-    ) {
-      frequency =
-        720;
-
-      duration =
-        .05;
-    } else if (
-      type ===
-      'play'
-    ) {
-      frequency =
-        500;
-
-      duration =
-        .06;
-    } else if (
-      type ===
-      'cut'
-    ) {
-      frequency =
-        300;
-
-      duration =
-        .09;
-    } else if (
-      type ===
-      'take'
-    ) {
-      frequency =
-        380;
-
-      duration =
-        .07;
-    } else if (
-      type ===
-      'gift'
-    ) {
-      frequency =
-        560;
-
-      duration =
-        .08;
-    } else if (
-      type ===
-      'achievement'
-    ) {
-      frequency =
-        840;
-
-      duration =
-        .14;
-    } else if (
-      type ===
-      'win'
-    ) {
-      frequency =
-        920;
-
-      duration =
-        .20;
-    }
-
-    oscillator.frequency.value =
-      frequency;
-
-    gain.gain.setValueAtTime(
-      .03,
-      context.currentTime
-    );
-
-    gain.gain
-      .exponentialRampToValueAtTime(
-        .001,
-        context.currentTime +
-        duration
+  try{
+    let u=
+      new SpeechSynthesisUtterance(
+        t
       );
 
-    oscillator.start();
+    u.lang=
+      'ka-GE';
 
-    oscillator.stop(
-      context.currentTime +
-      duration
-    );
-  } catch (error) {
-    console.log(
-      'SFX unavailable'
+    u.rate=
+      1.03;
+
+    speechSynthesis
+      .cancel();
+
+    speechSynthesis
+      .speak(u);
+  }catch{
+    sound(
+      'voice'
     );
   }
 }
+
+function sound(t){
+  if(!sfxOn)
+    return;
+
+  try{
+    let A=
+      window.AudioContext||
+      window.webkitAudioContext;
+
+    let c=
+      new A();
+
+    let o=
+      c.createOscillator();
+
+    let g=
+      c.createGain();
+
+    let f=
+      t==='cut'
+        ?300
+        :t==='win'
+          ?900
+          :t==='select'
+            ?650
+            :t==='gift'
+              ?550
+              :450;
+
+    o.connect(g);
+
+    g.connect(
+      c.destination
+    );
+
+    o.frequency.value=f;
+
+    g.gain.value=.025;
+
+    o.start();
+
+    g.gain
+      .exponentialRampToValueAtTime(
+        .001,
+        c.currentTime+
+        .08
+      );
+
+    o.stop(
+      c.currentTime+
+      .08
+    );
+  }catch{}
+}
+
+socket.on(
+  'connect_error',
+  e=>
+    $('wait')
+      .textContent=
+        'კავშირის შეცდომა: '+
+        e.message
+);
+
+renderProf();
 
 </script>
 
@@ -6885,63 +6246,37 @@ function playSfx(type) {
 </html>
 `;
 
-/* =========================================================
-   ROUTES
-========================================================= */
-
 app.get(
   '/',
-  function (
-    req,
-    res
-  ) {
+  (_,res)=>
     res
       .type('html')
-      .send(PAGE);
-  }
+      .send(PAGE)
 );
 
 app.get(
   '/health',
-  function (
-    req,
-    res
-  ) {
+  (_,res)=>
     res.json({
-      ok: true,
-
+      ok:true,
       cards:
-        createDeck().length,
-
+        deck().length,
       tester:
-        TESTER_NAME,
-
-      turnSeconds:
-        TURN_SECONDS
-    });
-  }
+        TESTER,
+      rooms:
+        rooms.size,
+      users:
+        Object.keys(
+          users
+        ).length
+    })
 );
-
-/* =========================================================
-   START SERVER
-========================================================= */
 
 server.listen(
   PORT,
-  function () {
+  ()=>
     console.log(
-      'WRITTEN BURA running on port',
+      'WRITTEN BURA on',
       PORT
-    );
-
-    console.log(
-      'Deck:',
-      createDeck().length
-    );
-
-    console.log(
-      'Tester:',
-      TESTER_NAME
-    );
-  }
+    )
 );
