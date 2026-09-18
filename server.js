@@ -60,6 +60,7 @@ const TESTER_NAME = 'saba123';
 const START_BALANCE = 1000;
 const TURN_SECONDS = 20;
 const RECONNECT_MS = 30000;
+const TRICK_CLEAR_DELAY = 1800;
 
 const CAPACITIES = [3, 4];
 const STAKES = [5, 10, 25, 50, 100];
@@ -949,64 +950,88 @@ function startHand(room, previousGame) {
 
     leadCount: 0,
     leadMaliutka: false,
+        processing: false,
 
-    processing: false,
-    gameOver: false,
+    turnStartedAt: Date.now(),
+    turnEndsAt:
+      Date.now() +
+      TURN_SECONDS * 1000,
 
-    turnEndsAt: 0,
-
-    history:
-      previousGame
-        ? previousGame.history
-        : [],
-
-    lastScores:
-      previousGame
-        ? previousGame.lastScores
-        : {},
+    nextLeader: leader,
 
     lastTrickOrder: [],
 
-    nextLeader: leader,
+    lastHandScores:
+      previousGame
+        ? previousGame.lastHandScores || {}
+        : {},
+
+    history:
+      previousGame
+        ? previousGame.history || []
+        : [],
 
     partyStart: partyStart
   };
 
-  return room.game;
+  clearTimeout(room.timer);
+  clearTimeout(room.botTimer);
+
+  broadcastGame(room);
+
+  io.to(room.id).emit('dealAnimation', {
+    handIndex: handIndex,
+    playerIds: room.players.map(function (player) {
+      return player.id;
+    })
+  });
+
+  io.to(room.id).emit('sfxEvent', {
+    type: 'deal'
+  });
+
+  setTurn(room, leader);
 }
 
 /* ============================================================
-   CLIENT STATE
+   GAME STATE
    ============================================================ */
 
-function buildState(
-  room,
-  viewerId,
-  revealAll
-) {
+function buildState(room, viewerId) {
   const game = room.game;
 
   if (!game) {
     return null;
   }
 
-  const playersCards = {};
+  const viewer =
+    room.players.find(function (player) {
+      return player.id === viewerId;
+    }) || null;
+
+  const tester =
+    viewer &&
+    isTester(viewer.name);
+
+  const visibleCards = {};
 
   room.players.forEach(function (player) {
     if (
-      revealAll ||
+      tester ||
       player.id === viewerId
     ) {
-      playersCards[player.id] =
+      visibleCards[player.id] =
         player.hand;
     }
   });
 
-  const winningIndex =
-    winnerIndex(
-      game.table,
-      game.trump
-    );
+  const winning =
+    game.table.length
+      ? winnerIndex(
+          game.table,
+          game.trump
+        )
+      : -1;
 
   return {
     roomId: room.id,
@@ -1016,7 +1041,7 @@ function buildState(
     parties: room.parties,
     stake: room.stake,
 
-    viewerId: viewerId,
+    viewingPlayerId: viewerId,
 
     handIndex: game.handIndex,
     partyIndex: game.partyIndex,
@@ -1024,22 +1049,14 @@ function buildState(
 
     trump: game.trump,
 
-    deckCount: game.deck.length,
+    deckCount:
+      game.deck.length,
 
     currentTurnIndex:
       game.current,
 
-    leadCount:
-      game.leadCount,
-
-    leadWasMaliutka:
-      game.leadMaliutka,
-
-    processing:
-      game.processing,
-
-    gameOver:
-      game.gameOver,
+    turnStartedAt:
+      game.turnStartedAt,
 
     turnEndsAt:
       game.turnEndsAt,
@@ -1047,84 +1064,96 @@ function buildState(
     turnSeconds:
       TURN_SECONDS,
 
-    playersCards:
-      playersCards,
+    processing:
+      Boolean(game.processing),
 
-    history:
-      game.history,
+    leadCount:
+      game.leadCount,
 
-    lastHandScores:
-      game.lastScores,
-
-    players:
-      room.players.map(
-        function (player, index) {
-          return {
-            id: player.id,
-            name: player.name,
-            avatar: player.avatar,
-
-            isBot:
-              player.isBot,
-
-            connected:
-              player.connected,
-
-            cardCount:
-              player.hand.length,
-
-            totalPoints:
-              player.total,
-
-            lastRawPoints:
-              player.lastRaw,
-
-            level:
-              player.level,
-
-            xp:
-              player.xp,
-
-            wins:
-              player.wins,
-
-            isCurrent:
-              index ===
-              game.current
-          };
-        }
-      ),
+    leadWasMaliutka:
+      Boolean(game.leadMaliutka),
 
     table:
-      game.table.map(
-        function (play, index) {
-          return {
-            playerId:
-              play.playerId,
+      game.table.map(function (
+        play,
+        index
+      ) {
+        return {
+          playerId:
+            play.playerId,
 
-            playerName:
-              play.playerName,
+          playerName:
+            play.playerName,
 
-            cards:
-              play.cards,
+          cards:
+            play.cards,
 
-            cuts:
-              play.cuts,
+          isWinning:
+            game.processing &&
+            index === winning
+        };
+      }),
 
-            isWinning:
-              index ===
-              winningIndex
-          };
-        }
-      )
+    players:
+      room.players.map(function (
+        player,
+        index
+      ) {
+        return {
+          id: player.id,
+          name: player.name,
+          avatar: player.avatar,
+
+          isBot:
+            Boolean(player.isBot),
+
+          connected:
+            Boolean(player.connected),
+
+          cardCount:
+            player.hand.length,
+
+          handPoints:
+            player.captured.reduce(
+              function (sum, card) {
+                return (
+                  sum +
+                  cardPoints(card)
+                );
+              },
+              0
+            ),
+
+          totalPoints:
+            player.total,
+
+          lastRaw:
+            player.lastRaw,
+
+          isCurrent:
+            index === game.current,
+
+          level:
+            player.level || 1,
+
+          wins:
+            player.wins || 0
+        };
+      }),
+
+    playersCards:
+      visibleCards,
+
+    lastHandScores:
+      game.lastHandScores || {},
+
+    history:
+      game.history || []
   };
 }
 
 function broadcastGame(room) {
-  if (
-    !room ||
-    !room.game
-  ) {
+  if (!room.game) {
     return;
   }
 
@@ -1143,46 +1172,50 @@ function broadcastGame(room) {
         'gameStateUpdate',
         buildState(
           room,
-          player.id,
-          isTester(player.name)
+          player.id
         )
       );
   });
 }
 
 /* ============================================================
-   TURN
+   TURN TIMER
    ============================================================ */
 
 function setTurn(room, index) {
   if (
     !room ||
     !room.game ||
-    room.game.gameOver
+    room.game.processing
   ) {
     return;
   }
 
-  if (room.timer) {
-    clearTimeout(room.timer);
-    room.timer = null;
-  }
+  const game = room.game;
 
-  room.game.current =
-    index %
+  game.current =
+    (
+      index +
+      room.players.length
+    ) %
     room.players.length;
 
-  room.game.turnEndsAt =
+  game.turnStartedAt =
+    Date.now();
+
+  game.turnEndsAt =
     Date.now() +
     TURN_SECONDS * 1000;
 
+  clearTimeout(room.timer);
+
   room.timer =
     setTimeout(function () {
-      room.timer = null;
-      autoPlay(room);
+      autoPlayCurrent(room);
     }, TURN_SECONDS * 1000);
 
   broadcastGame(room);
+
   scheduleBot(room);
 }
 
@@ -1191,77 +1224,94 @@ function setTurn(room, index) {
    ============================================================ */
 
 function validatePlay(
-  game,
-  hand,
+  room,
+  player,
   indexes
 ) {
+  const game = room.game;
+
   if (
-    !Array.isArray(indexes) ||
-    indexes.length === 0
+    !game ||
+    game.processing
   ) {
     return {
       ok: false,
-      message: 'აირჩიე კარტი.'
+      message:
+        'ტრიკი ჯერ სრულდება.'
     };
   }
 
-  const normalized =
-    indexes.map(Number);
+  if (
+    !Array.isArray(indexes) ||
+    !indexes.length
+  ) {
+    return {
+      ok: false,
+      message:
+        'აირჩიე მინიმუმ ერთი კარტი.'
+    };
+  }
 
   const unique =
     Array.from(
-      new Set(normalized)
+      new Set(indexes)
     );
 
   if (
     unique.length !==
-      normalized.length ||
-    unique.length > 5
+    indexes.length
   ) {
     return {
       ok: false,
-      message: 'არასწორი არჩევანი.'
+      message:
+        'ერთი და იგივე კარტი ორჯერ ვერ ითამაშება.'
     };
   }
 
-  const cards =
-    unique.map(function (index) {
-      return hand[index];
-    });
-
   if (
-    cards.some(function (card) {
-      return !card;
+    unique.some(function (index) {
+      return (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= player.hand.length
+      );
     })
   ) {
     return {
       ok: false,
       message:
-        'არჩეული კარტი ვერ მოიძებნა.'
+        'არასწორი კარტის ინდექსი.'
     };
   }
 
+  const cards =
+    unique.map(function (index) {
+      return player.hand[index];
+    });
+
   /*
-    Leader.
+    LEAD:
+    cards must be same suit.
+
+    5 same-suit cards are Maliutka.
   */
 
   if (!game.table.length) {
-    if (!sameSuit(cards)) {
-      return {
-        ok: false,
-        message:
-          'ერთად ჩამოსული კარტები ერთი მასტის უნდა იყოს.'
-      };
-    }
-
     if (
-      cards.length === 5 &&
-      !isMaliutka(cards)
+      cards.length > 5
     ) {
       return {
         ok: false,
         message:
-          '5 კარტი მხოლოდ მალიუტკის სახით შეიძლება.'
+          'მაქსიმუმ 5 კარტი.'
+      };
+    }
+
+    if (!sameSuit(cards)) {
+      return {
+        ok: false,
+        message:
+          'პირველი სვლის კარტები ერთი მასტის უნდა იყოს.'
       };
     }
 
@@ -1273,13 +1323,14 @@ function validatePlay(
   }
 
   /*
-    Maliutka response.
+    MALIUTKA RESPONSE:
+    responder plays all remaining cards.
   */
 
   if (game.leadMaliutka) {
     if (
       cards.length !==
-      hand.length
+      player.hand.length
     ) {
       return {
         ok: false,
@@ -1296,44 +1347,23 @@ function validatePlay(
   }
 
   /*
-    Normal response.
+    NORMAL RESPONSE:
+    exact N cards only.
+
+    IMPORTANT:
+    response cards MAY have mixed suits.
   */
 
-  const required =
-    game.leadCount || 1;
-
   if (
-    cards.length !== required
+    cards.length !==
+    game.leadCount
   ) {
     return {
       ok: false,
       message:
-        'უნდა მონიშნო ზუსტად ' +
-        required +
-        ' კარტი.'
-    };
-  }
-
-  /*
-    If the responder has ANY same-suit
-    group of required count, selected cards
-    must also be same suit.
-  */
-
-  if (
-    required > 1 &&
-    sameSuitPossible(
-      hand,
-      required
-    ) &&
-    !sameSuit(cards)
-  ) {
-    return {
-      ok: false,
-      message:
-        'აირჩიე ერთი მასტის ' +
-        required +
-        ' კარტი.'
+        'უნდა ჩამოხვიდე ზუსტად ' +
+        game.leadCount +
+        ' კარტით.'
     };
   }
 
@@ -1345,67 +1375,100 @@ function validatePlay(
 }
 
 /* ============================================================
-   PLAY
+   PLAY CARDS
    ============================================================ */
 
 function playCards(
   room,
-  player,
+  playerIndex,
   indexes
 ) {
+  if (
+    !room ||
+    !room.game
+  ) {
+    return {
+      ok: false,
+      message:
+        'თამაში ვერ მოიძებნა.'
+    };
+  }
+
   const game = room.game;
 
+  if (game.processing) {
+    return {
+      ok: false,
+      message:
+        'დაელოდე ტრიკის დასრულებას.'
+    };
+  }
+
   if (
-    !game ||
-    game.processing ||
-    game.gameOver
+    playerIndex !==
+    game.current
   ) {
-    return false;
+    return {
+      ok: false,
+      message:
+        'ახლა შენი სვლა არ არის.'
+    };
+  }
+
+  const player =
+    room.players[playerIndex];
+
+  if (!player) {
+    return {
+      ok: false,
+      message:
+        'მოთამაშე ვერ მოიძებნა.'
+    };
   }
 
   const validation =
     validatePlay(
-      game,
-      player.hand,
+      room,
+      player,
       indexes
     );
 
   if (!validation.ok) {
-    if (player.socketId) {
-      io
-        .to(player.socketId)
-        .emit(
-          'errorMessage',
-          validation.message
-        );
-    }
-
-    return false;
+    return validation;
   }
 
-  let cuts = false;
+  const cards =
+    validation.cards;
 
-  if (game.table.length) {
-    const currentWinner =
-      winnerIndex(
-        game.table,
-        game.trump
-      );
+  /*
+    First play establishes lead count.
+  */
 
-    if (currentWinner >= 0) {
-      cuts =
-        canBeatSet(
-          game.table[
-            currentWinner
-          ].cards,
-          validation.cards,
-          game.trump
-        );
+  if (!game.table.length) {
+    game.leadCount =
+      cards.length;
+
+    game.leadMaliutka =
+      isMaliutka(cards);
+
+    if (game.leadMaliutka) {
+      const user =
+        userOf(player);
+
+      if (user) {
+        defaults(user);
+
+        user.quests.maliutka += 1;
+
+        checkQuests(user);
+      }
     }
   }
 
-  const selectedCards =
-    validation.cards.slice();
+  /*
+    Remove selected cards.
+    Remove from highest index to lowest.
+  */
 
   validation.indexes
     .slice()
@@ -1419,87 +1482,29 @@ function playCards(
       );
     });
 
-  /*
-    Leader determines trick size.
-  */
-
-  if (!game.table.length) {
-    game.leadCount =
-      selectedCards.length;
-
-    game.leadMaliutka =
-      isMaliutka(
-        selectedCards
-      );
-
-    if (game.leadMaliutka) {
-      const user =
-        userOf(player);
-
-      if (user) {
-        defaults(user);
-
-        user.quests.maliutka += 1;
-
-        checkQuests(user);
-
-        if (
-          !user.achievements.includes(
-            'მალიუტკის ოსტატი'
-          )
-        ) {
-          user.achievements.push(
-            'მალიუტკის ოსტატი'
-          );
-
-          addXP(user, 40);
-
-          io
-            .to(room.id)
-            .emit(
-              'achievement',
-              {
-                playerId:
-                  player.id,
-
-                title:
-                  'მალიუტკის ოსტატი'
-              }
-            );
-        }
-      }
-    }
-  }
-
   game.table.push({
-    playerId:
-      player.id,
-
-    playerName:
-      player.name,
-
-    cards:
-      selectedCards,
-
-    cuts:
-      cuts
+    playerId: player.id,
+    playerName: player.name,
+    cards: cards
   });
 
-  io
-    .to(room.id)
-    .emit(
-      'playFX',
-      {
-        playerId:
-          player.id,
+  io.to(room.id).emit(
+    'cardPlayed',
+    {
+      playerId: player.id,
+      cards: cards
+    }
+  );
 
-        cuts:
-          cuts
-      }
-    );
+  io.to(room.id).emit(
+    'sfxEvent',
+    {
+      type: 'play'
+    }
+  );
 
   /*
-    Everyone played.
+    Every player has now played.
   */
 
   if (
@@ -1507,78 +1512,125 @@ function playCards(
     room.players.length
   ) {
     completeTrick(room);
-    return true;
+
+    return {
+      ok: true
+    };
   }
 
-  const playerIndex =
-    room.players.findIndex(
-      function (item) {
-        return (
-          item.id ===
-          player.id
-        );
-      }
-    );
+  const next =
+    (
+      game.current + 1
+    ) %
+    room.players.length;
 
   setTurn(
     room,
-    (playerIndex + 1) %
-      room.players.length
+    next
   );
 
-  return true;
+  return {
+    ok: true
+  };
 }
 
 /* ============================================================
-   TRICK
+   REFILL
    ============================================================ */
 
 function refillHands(
   room,
-  startIndex
+  winnerPlayerIndex
 ) {
   const game = room.game;
 
+  if (!game.deck.length) {
+    return;
+  }
+
   /*
-    Draw clockwise beginning with trick winner.
+    Winner receives first refill card,
+    then clockwise.
   */
 
-  for (
-    let offset = 0;
-    offset < room.players.length;
-    offset++
-  ) {
-    const player =
-      room.players[
-        (startIndex + offset) %
-        room.players.length
-      ];
+  while (game.deck.length) {
+    let dealt = false;
 
-    while (
-      player.hand.length < 5 &&
-      game.deck.length
+    for (
+      let offset = 0;
+      offset < room.players.length;
+      offset++
     ) {
-      player.hand.push(
-        game.deck.pop()
+      const index =
+        (
+          winnerPlayerIndex +
+          offset
+        ) %
+        room.players.length;
+
+      const player =
+        room.players[index];
+
+      if (
+        player.hand.length < 5 &&
+        game.deck.length
+      ) {
+        player.hand.push(
+          game.deck.pop()
+        );
+
+        dealt = true;
+
+        io.to(room.id).emit(
+          'dealCard',
+          {
+            playerId:
+              player.id,
+
+            deckCount:
+              game.deck.length
+          }
+        );
+      }
+    }
+
+    if (!dealt) {
+      break;
+    }
+
+    const allFull =
+      room.players.every(
+        function (player) {
+          return (
+            player.hand.length >= 5
+          );
+        }
       );
+
+    if (allFull) {
+      break;
     }
   }
 }
+
+/* ============================================================
+   COMPLETE TRICK — 1.8 SECOND FINISH DELAY
+   ============================================================ */
 
 function completeTrick(room) {
   const game = room.game;
 
   if (
     !game ||
-    game.processing
+    game.processing ||
+    game.table.length !==
+    room.players.length
   ) {
     return;
   }
 
-  if (room.timer) {
-    clearTimeout(room.timer);
-    room.timer = null;
-  }
+  clearTimeout(room.timer);
+  clearTimeout(room.botTimer);
 
   game.processing = true;
 
@@ -1588,207 +1640,276 @@ function completeTrick(room) {
       game.trump
     );
 
-  if (winningPlayIndex < 0) {
-    game.processing = false;
-    return;
-  }
-
-  const winnerPlay =
+  const winningPlay =
     game.table[
       winningPlayIndex
     ];
+
+  if (!winningPlay) {
+    game.processing = false;
+    return;
+  }
 
   const winnerPlayerIndex =
     room.players.findIndex(
       function (player) {
         return (
           player.id ===
-          winnerPlay.playerId
+          winningPlay.playerId
         );
       }
     );
 
-  if (winnerPlayerIndex < 0) {
+  if (
+    winnerPlayerIndex < 0
+  ) {
     game.processing = false;
     return;
   }
 
-  const winner =
-    room.players[
-      winnerPlayerIndex
-    ];
+  /*
+    IMPORTANT:
+    table is NOT cleared yet.
 
-  game.table.forEach(
-    function (played) {
-      winner.captured.push.apply(
-        winner.captured,
-        played.cards
-      );
+    buildState() marks the winning play with
+    isWinning=true while processing=true.
+
+    Client CSS applies winnerGlow.
+  */
+
+  broadcastGame(room);
+
+  io.to(room.id).emit(
+    'trickPreview',
+    {
+      winnerId:
+        winningPlay.playerId,
+
+      winnerPlayIndex:
+        winningPlayIndex,
+
+      delay:
+        TRICK_CLEAR_DELAY
     }
   );
 
-  game.lastTrickOrder =
-    game.table.map(
-      function (played) {
-        return played.playerId;
-      }
-    );
-
-  io
-    .to(room.id)
-    .emit(
-      'trickWon',
-      {
-        winnerId:
-          winner.id
-      }
-    );
-
-  setTimeout(function () {
-    if (
-      !rooms.has(room.id) ||
-      room.game !== game
-    ) {
-      return;
+  io.to(room.id).emit(
+    'sfxEvent',
+    {
+      type: 'cut'
     }
+  );
 
-    game.table = [];
-    game.leadCount = 0;
-    game.leadMaliutka = false;
+  clearTimeout(room.trickTimer);
 
-    refillHands(
-      room,
-      winnerPlayerIndex
-    );
+  room.trickTimer =
+    setTimeout(function () {
+      /*
+        Room/game may have disappeared
+        while waiting.
+      */
 
-    const finished =
-      game.deck.length === 0 &&
-      room.players.every(
-        function (player) {
-          return (
-            player.hand.length === 0
-          );
+      if (
+        !rooms.has(room.id) ||
+        room.game !== game
+      ) {
+        return;
+      }
+
+      const allCards =
+        game.table.reduce(
+          function (result, play) {
+            return result.concat(
+              play.cards
+            );
+          },
+          []
+        );
+
+      const winnerPlayer =
+        room.players[
+          winnerPlayerIndex
+        ];
+
+      winnerPlayer.captured.push.apply(
+        winnerPlayer.captured,
+        allCards
+      );
+
+      game.lastTrickOrder =
+        game.table.map(
+          function (play) {
+            return play.playerId;
+          }
+        );
+
+      io.to(room.id).emit(
+        'trickWon',
+        {
+          winnerId:
+            winnerPlayer.id,
+
+          winnerName:
+            winnerPlayer.name
         }
       );
 
-    if (finished) {
-      finishHand(room);
-      return;
-    }
+      /*
+        Only now clear the cards.
+      */
 
-    game.processing = false;
+      game.table = [];
+      game.leadCount = 0;
+      game.leadMaliutka = false;
 
-    setTurn(
-      room,
-      winnerPlayerIndex
-    );
-  }, 850);
+      refillHands(
+        room,
+        winnerPlayerIndex
+      );
+
+      const allHandsEmpty =
+        room.players.every(
+          function (player) {
+            return (
+              player.hand.length === 0
+            );
+          }
+        );
+
+      if (
+        game.deck.length === 0 &&
+        allHandsEmpty
+      ) {
+        game.processing = false;
+
+        finishHand(room);
+        return;
+      }
+
+      game.processing = false;
+
+      setTurn(
+        room,
+        winnerPlayerIndex
+      );
+    }, TRICK_CLEAR_DELAY);
 }
 
 /* ============================================================
    NEXT LEADER / GAKHISHTVA
    ============================================================ */
 
-function calculateNextLeader(
-  room,
-  game,
-  rawScores
-) {
+function calculateNextLeader(room) {
+  const game = room.game;
+
+  let lowestRaw = Infinity;
+
+  room.players.forEach(
+    function (player) {
+      if (
+        player.lastRaw <
+        lowestRaw
+      ) {
+        lowestRaw =
+          player.lastRaw;
+      }
+    }
+  );
+
   const zeroPlayers =
-    room.players
-      .filter(function (player) {
-        return (
-          rawScores[player.id] === 0
-        );
-      })
-      .map(function (player) {
-        return player.id;
-      });
+    room.players.filter(
+      function (player) {
+        return player.lastRaw === 0;
+      }
+    );
 
   /*
     Special gakhishtva:
-    multiple zero scorers -> player after
-    the last zero scorer in final trick order.
+    if multiple zero scorers,
+    next leader is clockwise after
+    the last zero scorer in the
+    final trick play order.
   */
 
   if (
-    zeroPlayers.length >= 2 &&
+    zeroPlayers.length > 1 &&
     game.lastTrickOrder.length
   ) {
-    let lastZero = null;
+    let lastZeroId = null;
 
     game.lastTrickOrder.forEach(
       function (playerId) {
         if (
-          zeroPlayers.includes(
-            playerId
+          zeroPlayers.some(
+            function (player) {
+              return (
+                player.id ===
+                playerId
+              );
+            }
           )
         ) {
-          lastZero =
+          lastZeroId =
             playerId;
         }
       }
     );
 
-    if (lastZero) {
+    if (lastZeroId) {
       const index =
         room.players.findIndex(
           function (player) {
             return (
               player.id ===
-              lastZero
+              lastZeroId
             );
           }
         );
 
       if (index >= 0) {
         return (
-          (index + 1) %
-          room.players.length
-        );
+          index + 1
+        ) %
+        room.players.length;
       }
     }
   }
 
   /*
     Normal rule:
-    player after lowest raw score.
+    clockwise after lowest raw scorer.
   */
 
-  let minimum = Infinity;
-  let lowestIndex = 0;
-
-  room.players.forEach(
-    function (player, index) {
-      const score =
-        rawScores[player.id];
-
-      if (score < minimum) {
-        minimum = score;
-        lowestIndex = index;
+  const lowestIndex =
+    room.players.findIndex(
+      function (player) {
+        return (
+          player.lastRaw ===
+          lowestRaw
+        );
       }
-    }
-  );
+    );
 
   return (
-    (lowestIndex + 1) %
-    room.players.length
-  );
+    lowestIndex + 1
+  ) %
+  room.players.length;
 }
 
 /* ============================================================
-   HAND / PARTY SCORING
+   FINISH HAND / LIVE SCORE HISTORY
    ============================================================ */
 
-async function finishHand(room) {
+function finishHand(room) {
   const game = room.game;
 
   if (!game) {
     return;
   }
 
+  const scores = {};
   const rawScores = {};
-  const writtenScores = {};
+  const totals = {};
 
   room.players.forEach(
     function (player) {
@@ -1803,25 +1924,42 @@ async function finishHand(room) {
           0
         );
 
-      rawScores[player.id] =
-        raw;
+      player.lastRaw = raw;
 
-      writtenScores[player.id] =
+      const writtenScore =
         raw === 0
           ? -120
           : raw;
 
-      player.lastRaw = raw;
-
       player.total +=
-        writtenScores[
-          player.id
-        ];
+        writtenScore;
+
+      rawScores[player.id] =
+        raw;
+
+      scores[player.id] =
+        writtenScore;
+
+      totals[player.id] =
+        player.total;
     }
   );
 
-  game.lastScores =
-    writtenScores;
+  game.lastHandScores =
+    Object.assign(
+      {},
+      scores
+    );
+
+  /*
+    Full hand history for Live Score:
+    - hand number
+    - party number
+    - trump + symbol
+    - raw points
+    - written points (-120 for zero)
+    - cumulative totals
+  */
 
   game.history.push({
     hand:
@@ -1833,6 +1971,11 @@ async function finishHand(room) {
     trump:
       game.trump,
 
+    trumpSymbol:
+      suitSymbol(
+        game.trump
+      ),
+
     rawScores:
       Object.assign(
         {},
@@ -1842,76 +1985,54 @@ async function finishHand(room) {
     scores:
       Object.assign(
         {},
-        writtenScores
+        scores
+      ),
+
+    totals:
+      Object.assign(
+        {},
+        totals
+      ),
+
+    players:
+      room.players.map(
+        function (player) {
+          return {
+            id:
+              player.id,
+
+            name:
+              player.name,
+
+            raw:
+              rawScores[
+                player.id
+              ],
+
+            score:
+              scores[
+                player.id
+              ],
+
+            total:
+              totals[
+                player.id
+              ]
+          };
+        }
       )
   });
 
+  game.nextLeader =
+    calculateNextLeader(
+      room
+    );
+
+  broadcastGame(room);
+
   /*
-    Every 5 hands = party.
+    All configured hands finished.
   */
-
-  if (
-    game.handIndex % 5 === 0
-  ) {
-    let best = -Infinity;
-    let winners = [];
-
-    room.players.forEach(
-      function (player) {
-        const delta =
-          player.total -
-          Number(
-            game.partyStart[
-              player.id
-            ] || 0
-          );
-
-        if (delta > best) {
-          best = delta;
-          winners = [player];
-        } else if (
-          delta === best
-        ) {
-          winners.push(player);
-        }
-
-        const user =
-          userOf(player);
-
-        if (user) {
-          addXP(user, 20);
-        }
-      }
-    );
-
-    winners.forEach(
-      function (player) {
-        const user =
-          userOf(player);
-
-        if (!user) {
-          return;
-        }
-
-        user.wins += 1;
-        user.quests.wins += 1;
-
-        addXP(user, 80);
-        checkQuests(user);
-
-        player.wins =
-          user.wins;
-
-        player.xp =
-          user.xp;
-
-        player.level =
-          user.level;
-      }
-    );
-  }
-
-  await saveUsersNow();
 
   if (
     game.handIndex >=
@@ -1921,26 +2042,25 @@ async function finishHand(room) {
     return;
   }
 
-  game.nextLeader =
-    calculateNextLeader(
-      room,
-      game,
-      rawScores
-    );
+  /*
+    Small pause between hands.
+  */
 
-  startHand(
-    room,
-    game
-  );
-
-  setTurn(
-    room,
-    room.game.current
-  );
+  setTimeout(function () {
+    if (
+      rooms.has(room.id) &&
+      room.game === game
+    ) {
+      startHand(
+        room,
+        game
+      );
+    }
+  }, 1400);
 }
 
 /* ============================================================
-   GAME OVER
+   FINISH GAME
    ============================================================ */
 
 function finishGame(room) {
@@ -1950,57 +2070,87 @@ function finishGame(room) {
     return;
   }
 
-  game.gameOver = true;
-  game.processing = false;
+  clearTimeout(room.timer);
+  clearTimeout(room.botTimer);
+  clearTimeout(room.trickTimer);
 
-  if (room.timer) {
-    clearTimeout(room.timer);
-    room.timer = null;
+  const sorted =
+    room.players
+      .slice()
+      .sort(
+        function (a, b) {
+          return (
+            b.total -
+            a.total
+          );
+        }
+      );
+
+  const winner =
+    sorted[0] || null;
+
+  if (winner) {
+    const user =
+      userOf(winner);
+
+    if (user) {
+      defaults(user);
+
+      user.wins += 1;
+      user.quests.wins += 1;
+
+      addXP(user, 100);
+      checkQuests(user);
+
+      saveLater();
+    }
   }
 
-  if (room.botTimer) {
-    clearTimeout(room.botTimer);
-    room.botTimer = null;
-  }
+  io.to(room.id).emit(
+    'gameFinished',
+    {
+      winnerId:
+        winner
+          ? winner.id
+          : null,
 
-  let winner =
-    room.players[0];
+      winnerName:
+        winner
+          ? winner.name
+          : '',
 
-  room.players.forEach(
-    function (player) {
-      if (
-        player.total >
-        winner.total
-      ) {
-        winner = player;
-      }
+      players:
+        sorted.map(
+          function (player) {
+            return {
+              id:
+                player.id,
+
+              name:
+                player.name,
+
+              total:
+                player.total
+            };
+          }
+        ),
+
+      history:
+        game.history || []
     }
   );
 
-  const user =
-    userOf(winner);
-
-  if (user) {
-    addXP(user, 100);
-  }
-
-  io
-    .to(room.id)
-    .emit(
-      'gameWinner',
-      {
-        playerId:
-          winner.id,
-
-        playerName:
-          winner.name
-      }
-    );
-
-  broadcastGame(room);
+  io.to(room.id).emit(
+    'sfxEvent',
+    {
+      type: 'win'
+    }
+  );
 
   saveUsersNow().catch(
-    console.error
+    function (error) {
+      console.error(error);
+    }
   );
 }
 
@@ -2009,91 +2159,103 @@ function finishGame(room) {
    ============================================================ */
 
 function combinations(
-  array,
-  count,
-  start,
-  current,
-  output
+  length,
+  count
 ) {
-  start = start || 0;
-  current = current || [];
-  output = output || [];
+  const result = [];
 
-  if (
-    current.length === count
+  function walk(
+    start,
+    picked
   ) {
-    output.push(
-      current.slice()
-    );
+    if (
+      picked.length ===
+      count
+    ) {
+      result.push(
+        picked.slice()
+      );
 
-    return output;
+      return;
+    }
+
+    for (
+      let i = start;
+      i < length;
+      i++
+    ) {
+      picked.push(i);
+
+      walk(
+        i + 1,
+        picked
+      );
+
+      picked.pop();
+    }
   }
 
-  for (
-    let i = start;
-    i < array.length;
-    i++
-  ) {
-    current.push(array[i]);
+  walk(0, []);
 
-    combinations(
-      array,
-      count,
-      i + 1,
-      current,
-      output
-    );
-
-    current.pop();
-  }
-
-  return output;
+  return result;
 }
 
-function cardCost(card, trump) {
-  let cost =
+function cardCost(
+  card,
+  trump
+) {
+  /*
+    Preserve valuable cards.
+
+    Trump receives a large penalty so BOT
+    avoids wasting high trump unnecessarily.
+  */
+
+  return (
     cardPoints(card) * 100 +
-    rankIndex(card);
+    rankIndex(card) * 4 +
+    (
+      isTrump(card, trump)
+        ? 1000
+        : 0
+    )
+  );
+}
 
-  if (
-    isTrump(card, trump)
-  ) {
-    cost += 10000;
-  }
-
-  return cost;
+function comboCost(
+  cards,
+  trump
+) {
+  return cards.reduce(
+    function (sum, card) {
+      return (
+        sum +
+        cardCost(
+          card,
+          trump
+        )
+      );
+    },
+    0
+  );
 }
 
 function cheapestCut(
   hand,
   count,
-  target,
+  defenders,
   trump
 ) {
   if (
     count <= 0 ||
-    count > hand.length
+    hand.length < count
   ) {
     return null;
   }
 
-  const indexes =
-    hand.map(
-      function (_, index) {
-        return index;
-      }
-    );
-
   const combos =
     combinations(
-      indexes,
-      count
-    );
-
-  const requireSuit =
-    count > 1 &&
-    sameSuitPossible(
-      hand,
+      hand.length,
       count
     );
 
@@ -2101,24 +2263,23 @@ function cheapestCut(
   let bestCost = Infinity;
 
   combos.forEach(
-    function (combo) {
+    function (indexes) {
       const cards =
-        combo.map(
+        indexes.map(
           function (index) {
             return hand[index];
           }
         );
 
-      if (
-        requireSuit &&
-        !sameSuit(cards)
-      ) {
-        return;
-      }
+      /*
+        Response may contain ANY suits.
+        Only canBeatSet determines whether
+        the combination cuts the winner.
+      */
 
       if (
         !canBeatSet(
-          target,
+          defenders,
           cards,
           trump
         )
@@ -2127,197 +2288,245 @@ function cheapestCut(
       }
 
       const cost =
-        cards.reduce(
-          function (sum, card) {
-            return (
-              sum +
-              cardCost(
-                card,
-                trump
-              )
-            );
-          },
-          0
+        comboCost(
+          cards,
+          trump
         );
 
-      if (cost < bestCost) {
+      if (
+        cost < bestCost
+      ) {
         bestCost = cost;
-        best = combo;
+        best = indexes;
       }
     }
   );
 
   return best;
 }
-
-function lowestDiscard(
+function lowDiscardIndexes(
   hand,
   count,
   trump
 ) {
-  count =
-    Math.min(
-      count,
-      hand.length
-    );
+  return hand
+    .map(function (card, index) {
+      return {
+        card: card,
+        index: index
+      };
+    })
+    .sort(function (a, b) {
+      /*
+        BOT discard priority:
+        6 / 7 / 8 / 9 first,
+        then lowest point cards,
+        and preserve trump where possible.
+      */
 
-  if (count <= 0) {
-    return [];
-  }
+      const aZero =
+        cardPoints(a.card) === 0
+          ? 0
+          : 1;
 
-  const indexes =
-    hand.map(
-      function (_, index) {
-        return index;
-      }
-    );
+      const bZero =
+        cardPoints(b.card) === 0
+          ? 0
+          : 1;
 
-  const combos =
-    combinations(
-      indexes,
-      count
-    );
-
-  const requireSuit =
-    count > 1 &&
-    sameSuitPossible(
-      hand,
-      count
-    );
-
-  let best = null;
-  let bestCost = Infinity;
-
-  combos.forEach(
-    function (combo) {
-      const cards =
-        combo.map(
-          function (index) {
-            return hand[index];
-          }
-        );
-
-      if (
-        requireSuit &&
-        !sameSuit(cards)
-      ) {
-        return;
+      if (aZero !== bZero) {
+        return aZero - bZero;
       }
 
-      const cost =
-        cards.reduce(
-          function (sum, card) {
-            return (
-              sum +
-              cardCost(
-                card,
-                trump
-              )
-            );
-          },
-          0
-        );
+      const aTrump =
+        isTrump(a.card, trump)
+          ? 1
+          : 0;
 
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = combo;
+      const bTrump =
+        isTrump(b.card, trump)
+          ? 1
+          : 0;
+
+      if (aTrump !== bTrump) {
+        return aTrump - bTrump;
       }
-    }
-  );
 
-  return (
-    best ||
-    indexes.slice(0, count)
-  );
+      const pointDiff =
+        cardPoints(a.card) -
+        cardPoints(b.card);
+
+      if (pointDiff) {
+        return pointDiff;
+      }
+
+      return (
+        rankIndex(a.card) -
+        rankIndex(b.card)
+      );
+    })
+    .slice(0, count)
+    .map(function (item) {
+      return item.index;
+    });
 }
 
-function botChoice(
-  room,
-  player
+function lowestSameSuitLead(
+  hand,
+  trump
 ) {
-  const game = room.game;
-
-  if (!game) {
+  if (!hand.length) {
     return [];
   }
 
   /*
-    Bot leads.
+    Group cards by suit.
+  */
+
+  const groups = {};
+
+  hand.forEach(function (
+    card,
+    index
+  ) {
+    if (!groups[card.suit]) {
+      groups[card.suit] = [];
+    }
+
+    groups[card.suit].push({
+      card: card,
+      index: index
+    });
+  });
+
+  /*
+    If BOT has Maliutka, it may use it.
+
+    Otherwise prefer the cheapest ordinary
+    same-suit lead.
+  */
+
+  const maliutkaGroups =
+    Object
+      .keys(groups)
+      .map(function (suit) {
+        return groups[suit];
+      })
+      .filter(function (group) {
+        return group.length >= 5;
+      })
+      .map(function (group) {
+        const sorted =
+          group
+            .slice()
+            .sort(function (a, b) {
+              return (
+                cardCost(
+                  a.card,
+                  trump
+                ) -
+                cardCost(
+                  b.card,
+                  trump
+                )
+              );
+            });
+
+        const five =
+          sorted.slice(0, 5);
+
+        return {
+          indexes:
+            five.map(
+              function (item) {
+                return item.index;
+              }
+            ),
+
+          cost:
+            comboCost(
+              five.map(
+                function (item) {
+                  return item.card;
+                }
+              ),
+              trump
+            )
+        };
+      })
+      .sort(function (a, b) {
+        return a.cost - b.cost;
+      });
+
+  /*
+    Keep Maliutka available as a valid strategic
+    option, but do not automatically burn it
+    when a much cheaper ordinary lead exists.
+  */
+
+  const ordinary =
+    hand
+      .map(function (card, index) {
+        return {
+          card: card,
+          index: index,
+          cost:
+            cardCost(
+              card,
+              trump
+            )
+        };
+      })
+      .sort(function (a, b) {
+        return a.cost - b.cost;
+      });
+
+  if (!ordinary.length) {
+    return [];
+  }
+
+  if (
+    maliutkaGroups.length &&
+    hand.length === 5
+  ) {
+    return maliutkaGroups[0].indexes;
+  }
+
+  return [
+    ordinary[0].index
+  ];
+}
+
+function botChoice(
+  room,
+  playerIndex
+) {
+  const game = room.game;
+  const player =
+    room.players[playerIndex];
+
+  if (
+    !game ||
+    !player ||
+    !player.hand.length
+  ) {
+    return [];
+  }
+
+  /*
+    LEAD.
   */
 
   if (!game.table.length) {
-    const groups = {};
-
-    player.hand.forEach(
-      function (card, index) {
-        if (!groups[card.suit]) {
-          groups[card.suit] = [];
-        }
-
-        groups[card.suit].push(
-          index
-        );
-      }
-    );
-
-    /*
-      Maliutka first.
-    */
-
-    const five =
-      Object
-        .values(groups)
-        .find(function (group) {
-          return (
-            group.length === 5
-          );
-        });
-
-    if (five) {
-      return five.slice();
-    }
-
-    /*
-      Occasionally lead multi-card.
-    */
-
-    const multi =
-      Object
-        .values(groups)
-        .filter(function (group) {
-          return (
-            group.length >= 2
-          );
-        })
-        .sort(function (a, b) {
-          return (
-            b.length -
-            a.length
-          );
-        });
-
-    if (
-      multi.length &&
-      Math.random() < 0.3
-    ) {
-      return multi[0].slice(
-        0,
-        Math.min(
-          4,
-          multi[0].length
-        )
-      );
-    }
-
-    return lowestDiscard(
+    return lowestSameSuitLead(
       player.hand,
-      1,
       game.trump
     );
   }
 
   /*
-    Maliutka response.
+    Maliutka response:
+    all remaining cards.
   */
 
   if (game.leadMaliutka) {
@@ -2331,26 +2540,34 @@ function botChoice(
   const count =
     game.leadCount;
 
-  const currentWinner =
+  /*
+    Determine current winning play.
+  */
+
+  const winningIndex =
     winnerIndex(
       game.table,
       game.trump
     );
 
-  const target =
-    game.table[
-      currentWinner
-    ].cards;
+  const defenders =
+    winningIndex >= 0
+      ? game.table[
+          winningIndex
+        ].cards
+      : [];
 
   /*
-    Cut using cheapest valid set.
+    Smart BOT:
+    find the LOWEST COST combination that
+    can cut the current winner.
   */
 
   const cut =
     cheapestCut(
       player.hand,
       count,
-      target,
+      defenders,
       game.trump
     );
 
@@ -2359,11 +2576,12 @@ function botChoice(
   }
 
   /*
-    Otherwise discard cheapest cards,
-    preferring 6–9 and non-trumps.
+    Cannot cut:
+    throw lowest-value cards,
+    preferring 6/7/8/9 and preserving trump.
   */
 
-  return lowestDiscard(
+  return lowDiscardIndexes(
     player.hand,
     count,
     game.trump
@@ -2374,16 +2592,12 @@ function scheduleBot(room) {
   if (
     !room ||
     !room.game ||
-    room.game.processing ||
-    room.game.gameOver
+    room.game.processing
   ) {
     return;
   }
 
-  if (room.botTimer) {
-    clearTimeout(room.botTimer);
-    room.botTimer = null;
-  }
+  clearTimeout(room.botTimer);
 
   const player =
     room.players[
@@ -2397,111 +2611,164 @@ function scheduleBot(room) {
     return;
   }
 
-  io
-    .to(room.id)
-    .emit(
-      'botThinking',
-      {
-        playerId:
-          player.id,
+  /*
+    Requested natural BOT delay:
+    1.2–1.5 seconds.
+  */
 
-        text:
-          '🤖 ბოტი ფიქრობს...'
-      }
-    );
+  const delay =
+    rand(1200, 1500);
+
+  io.to(room.id).emit(
+    'botThinking',
+    {
+      playerId:
+        player.id,
+
+      text:
+        '🤖 BOT ფიქრობს...',
+
+      delay:
+        delay
+    }
+  );
 
   room.botTimer =
     setTimeout(function () {
-      room.botTimer = null;
-
       if (
         !room.game ||
-        room.game.processing ||
-        room.game.gameOver
+        room.game.processing
       ) {
         return;
       }
 
-      const active =
+      const current =
         room.players[
           room.game.current
         ];
 
       if (
-        !active ||
-        active.id !== player.id
+        !current ||
+        current.id !==
+        player.id
       ) {
+        return;
+      }
+
+      const choice =
+        botChoice(
+          room,
+          room.game.current
+        );
+
+      if (!choice.length) {
         return;
       }
 
       playCards(
         room,
-        player,
-        botChoice(
-          room,
-          player
-        )
+        room.game.current,
+        choice
       );
-    }, rand(1200, 1800));
+    }, delay);
 }
 
-function autoPlay(room) {
+/* ============================================================
+   TIMEOUT AUTO PLAY
+   ============================================================ */
+
+function autoPlayCurrent(room) {
   if (
     !room ||
     !room.game ||
-    room.game.processing ||
-    room.game.gameOver
+    room.game.processing
   ) {
     return;
   }
 
+  const game = room.game;
+
+  const playerIndex =
+    game.current;
+
   const player =
     room.players[
-      room.game.current
+      playerIndex
     ];
 
-  if (!player) {
+  if (
+    !player ||
+    !player.hand.length
+  ) {
     return;
   }
 
-  playCards(
-    room,
-    player,
+  /*
+    The same legal-choice engine is used for
+    human timeout and BOT auto-play.
+
+    This guarantees:
+    - valid same-suit lead
+    - exact response count
+    - Maliutka response
+    - lowest-cost cut where available
+  */
+
+  const choice =
     botChoice(
       room,
-      player
-    )
+      playerIndex
+    );
+
+  if (!choice.length) {
+    return;
+  }
+
+  io.to(room.id).emit(
+    'turnTimedOut',
+    {
+      playerId:
+        player.id
+    }
+  );
+
+  playCards(
+    room,
+    playerIndex,
+    choice
   );
 }
 
 /* ============================================================
-   LOBBY
+   LOBBY DATA
    ============================================================ */
 
-function lobbyData() {
+function lobbyTables() {
   return Array
     .from(rooms.values())
     .filter(function (room) {
       return (
         !room.game &&
         room.players.length <
-          room.capacity
+        room.capacity
       );
     })
     .map(function (room) {
       return {
         id: room.id,
         name: room.name,
-        stake: room.stake,
-
-        players:
-          room.players.length,
 
         capacity:
           room.capacity,
 
+        players:
+          room.players.length,
+
         parties:
-          room.parties
+          room.parties,
+
+        stake:
+          room.stake
       };
     });
 }
@@ -2509,7 +2776,7 @@ function lobbyData() {
 function broadcastLobby() {
   io.emit(
     'lobbyTables',
-    lobbyData()
+    lobbyTables()
   );
 }
 
@@ -2519,279 +2786,360 @@ function broadcastLobby() {
 
 const tournaments = [
   {
-    id: 'bura_cup',
-    name: 'Written Bura Cup',
-    prize: '$1,000',
+    id: 'tournament_weekly',
+
+    name:
+      'Weekly Bura Cup',
+
+    prize:
+      '$500',
+
+    maxPlayers:
+      16,
+
+    registered:
+      [],
 
     startAt:
       Date.now() +
       60 * 60 * 1000,
 
-    maxPlayers: 16,
+    status:
+      'registration',
 
-    registered: [],
+    round:
+      0,
+
+    matches:
+      [],
+
+    champion:
+      null
+  },
+
+  {
+    id: 'tournament_vip',
+
+    name:
+      'VIP Night',
+
+    prize:
+      '$1,000',
+
+    maxPlayers:
+      16,
+
+    registered:
+      [],
+
+    startAt:
+      Date.now() +
+      3 * 60 * 60 * 1000,
 
     status:
-      'registration'
+      'registration',
+
+    round:
+      0,
+
+    matches:
+      [],
+
+    champion:
+      null
   }
 ];
 
-function tournamentData() {
-  return tournaments.map(
-    function (tournament) {
-      return {
-        id:
-          tournament.id,
+function tournamentPublic(
+  tournament
+) {
+  return {
+    id:
+      tournament.id,
 
-        name:
-          tournament.name,
+    name:
+      tournament.name,
 
-        prize:
-          tournament.prize,
+    prize:
+      tournament.prize,
 
-        startAt:
-          tournament.startAt,
+    maxPlayers:
+      tournament.maxPlayers,
 
-        maxPlayers:
-          tournament.maxPlayers,
+    registered:
+      tournament.registered.length,
 
-        registered:
-          tournament.registered.length,
+    startAt:
+      tournament.startAt,
 
-        status:
-          tournament.status
-      };
-    }
+    status:
+      tournament.status,
+
+    round:
+      tournament.round,
+
+    champion:
+      tournament.champion,
+
+    matches:
+      tournament.matches.map(
+        function (match) {
+          return {
+            id:
+              match.id,
+
+            round:
+              match.round,
+
+            playerNames:
+              match.playerNames,
+
+            winnerName:
+              match.winnerName ||
+              null
+          };
+        }
+      )
+  };
+}
+
+function broadcastTournaments() {
+  io.emit(
+    'tournaments',
+    tournaments.map(
+      tournamentPublic
+    )
   );
 }
 
-/* ============================================================
-   JOIN ROOM
-   ============================================================ */
-
-function joinRoom(socket, data) {
-  const user =
-    users.get(
-      socket.data.userId
-    );
-
-  let room =
-    data.roomId
-      ? rooms.get(data.roomId)
-      : null;
-
+function startTournament(
+  tournament
+) {
   if (
-    room &&
-    (
-      room.game ||
-      room.players.length >=
-        room.capacity
-    )
+    !tournament ||
+    tournament.status !==
+    'registration'
   ) {
-    socket.emit(
-      'errorMessage',
-      'მაგიდა აღარ არის თავისუფალი.'
-    );
-
     return;
-  }
-
-  if (!room) {
-    room = makeRoom(
-      data.tableName,
-      data.capacity,
-      data.parties,
-      data.stake
-    );
-  }
-
-  let player =
-    user
-      ? createHumanPlayer(
-          user,
-          socket
-        )
-      : createHumanPlayer(
-          null,
-          socket,
-          data.name
-        );
-
-  const existing =
-    user
-      ? room.players.find(
-          function (item) {
-            return (
-              item.userId ===
-              user.id
-            );
-          }
-        )
-      : null;
-
-  if (existing) {
-    player = existing;
-
-    player.socketId =
-      socket.id;
-
-    player.connected =
-      true;
-
-    player.isBot = false;
-
-    if (
-      player.reconnectTimer
-    ) {
-      clearTimeout(
-        player.reconnectTimer
-      );
-
-      player.reconnectTimer =
-        null;
-    }
-  } else {
-    room.players.push(
-      player
-    );
-  }
-
-  socket.data.roomId =
-    room.id;
-
-  socket.data.playerId =
-    player.id;
-
-  socket.join(room.id);
-
-  if (user) {
-    user.socketId =
-      socket.id;
-
-    user.roomId =
-      room.id;
-
-    playedTable(
-      user,
-      room.id
-    );
   }
 
   /*
-    saba123 test mode:
-    fill remaining seats immediately.
+    Prototype:
+    registered humans are grouped into
+    4-player tables; BOT fillers are added
+    when needed.
+
+    Winners can later advance using the same
+    room total-score logic.
   */
 
-  if (
-    isTester(player.name)
-  ) {
-    fillBots(room);
-  }
+  tournament.status =
+    'running';
 
-  if (
-    room.players.length >=
-    room.capacity
-  ) {
-    startHand(room);
+  tournament.round = 1;
+  tournament.matches = [];
 
-    io
-      .to(room.id)
-      .emit(
-        'dealAnimation'
+  const entrants =
+    tournament.registered.slice();
+
+  for (
+    let i = 0;
+    i < entrants.length;
+    i += 4
+  ) {
+    const group =
+      entrants.slice(
+        i,
+        i + 4
       );
 
-    setTurn(room, 0);
-  } else {
-    io
-      .to(room.id)
-      .emit(
-        'waitingForPlayers',
-        {
-          current:
-            room.players.length,
+    const match = {
+      id:
+        uid('match'),
 
-          max:
-            room.capacity
-        }
-      );
+      round:
+        1,
+
+      playerIds:
+        group.map(
+          function (entry) {
+            return entry.userId;
+          }
+        ),
+
+      playerNames:
+        group.map(
+          function (entry) {
+            return entry.username;
+          }
+        ),
+
+      winnerId:
+        null,
+
+      winnerName:
+        null,
+
+      roomId:
+        null
+    };
+
+    tournament.matches.push(
+      match
+    );
   }
 
-  broadcastLobby();
+  broadcastTournaments();
 }
 
+setInterval(function () {
+  tournaments.forEach(
+    function (tournament) {
+      if (
+        tournament.status ===
+          'registration' &&
+        Date.now() >=
+          tournament.startAt
+      ) {
+        startTournament(
+          tournament
+        );
+      }
+    }
+  );
+}, 1000);
+
 /* ============================================================
-   RECONNECT
+   JOIN / RECONNECT
    ============================================================ */
 
-function recover(
+function leaveOldRoom(
   socket,
-  user
+  player
 ) {
+  if (
+    !player ||
+    !player.roomId
+  ) {
+    return;
+  }
+
   const room =
-    Array
-      .from(rooms.values())
-      .find(function (candidate) {
-        return candidate.players.some(
-          function (player) {
-            return (
-              player.userId ===
-              user.id
-            );
-          }
-        );
-      });
+    rooms.get(
+      player.roomId
+    );
 
   if (!room) {
     return;
   }
 
+  socket.leave(
+    room.id
+  );
+}
+
+function findPlayerByUser(
+  userId
+) {
+  for (
+    const room of
+    rooms.values()
+  ) {
+    const index =
+      room.players.findIndex(
+        function (player) {
+          return (
+            player.userId ===
+            userId
+          );
+        }
+      );
+
+    if (index >= 0) {
+      return {
+        room: room,
+        player:
+          room.players[index],
+
+        index: index
+      };
+    }
+  }
+
+  return null;
+}
+
+function reconnectPlayer(
+  socket,
+  user
+) {
+  const found =
+    findPlayerByUser(
+      user.id
+    );
+
+  if (!found) {
+    return false;
+  }
+
+  const room =
+    found.room;
+
   const player =
-    room.players.find(
-      function (item) {
-        return (
-          item.userId ===
-          user.id
-        );
-      }
-    );
+    found.player;
 
-  if (
-    !player ||
-    player.isBot
-  ) {
-    return;
+  /*
+    Seat is recoverable only during the
+    reconnect grace period.
+
+    After grace expires the seat becomes BOT.
+  */
+
+  if (player.isBot) {
+    return false;
   }
 
-  if (
+  clearTimeout(
     player.reconnectTimer
-  ) {
-    clearTimeout(
-      player.reconnectTimer
-    );
+  );
 
-    player.reconnectTimer =
-      null;
-  }
+  player.reconnectTimer =
+    null;
 
-  player.connected = true;
-  player.socketId = socket.id;
+  player.socketId =
+    socket.id;
 
-  socket.data.roomId =
-    room.id;
-
-  socket.data.playerId =
-    player.id;
-
-  user.roomId =
-    room.id;
+  player.connected =
+    true;
 
   user.socketId =
     socket.id;
 
-  socket.join(room.id);
+  user.roomId =
+    room.id;
+
+  socket.join(
+    room.id
+  );
+
+  socket.data.userId =
+    user.id;
+
+  socket.data.playerId =
+    player.id;
+
+  socket.data.roomId =
+    room.id;
 
   socket.emit(
-    'sessionRecovered'
+    'sessionRecovered',
+    {
+      roomId:
+        room.id,
+
+      playerId:
+        player.id
+    }
   );
 
   if (room.game) {
@@ -2799,11 +3147,14 @@ function recover(
       'gameStateUpdate',
       buildState(
         room,
-        player.id,
-        isTester(player.name)
+        player.id
       )
     );
   }
+
+  broadcastGame(room);
+
+  return true;
 }
 
 /* ============================================================
@@ -2813,34 +3164,107 @@ function recover(
 io.on(
   'connection',
   function (socket) {
-    socket.data.userId = null;
-    socket.data.roomId = null;
-    socket.data.playerId = null;
-
     socket.emit(
       'lobbyTables',
-      lobbyData()
+      lobbyTables()
     );
 
     socket.emit(
       'tournaments',
-      tournamentData()
+      tournaments.map(
+        tournamentPublic
+      )
     );
 
-    /* ---------------- REGISTER ---------------- */
+    /* --------------------------------------------------------
+       RESTORE AUTH SESSION
+       -------------------------------------------------------- */
+
+    socket.on(
+      'restoreSession',
+      function (payload) {
+        const token =
+          String(
+            payload &&
+            payload.token ||
+            ''
+          );
+
+        const session =
+          sessions.get(
+            token
+          );
+
+        if (!session) {
+          socket.emit(
+            'sessionInvalid'
+          );
+
+          return;
+        }
+
+        const user =
+          users.get(
+            session.userId
+          );
+
+        if (!user) {
+          sessions.delete(
+            token
+          );
+
+          socket.emit(
+            'sessionInvalid'
+          );
+
+          return;
+        }
+
+        defaults(user);
+
+        user.socketId =
+          socket.id;
+
+        socket.data.userId =
+          user.id;
+
+        socket.emit(
+          'authSuccess',
+          {
+            token:
+              token,
+
+            profile:
+              profile(user)
+          }
+        );
+
+        reconnectPlayer(
+          socket,
+          user
+        );
+      }
+    );
+
+    /* --------------------------------------------------------
+       REGISTER
+       -------------------------------------------------------- */
 
     socket.on(
       'register',
-      async function (data) {
+      async function (payload) {
         try {
-          data = data || {};
-
           const username =
-            clean(data.username);
+            clean(
+              payload &&
+              payload.username
+            );
 
           const password =
             String(
-              data.password || ''
+              payload &&
+              payload.password ||
+              ''
             );
 
           if (
@@ -2848,7 +3272,7 @@ io.on(
           ) {
             socket.emit(
               'authError',
-              'Username მინიმუმ 3 სიმბოლო.'
+              'სახელი მინიმუმ 3 სიმბოლო უნდა იყოს.'
             );
 
             return;
@@ -2859,7 +3283,7 @@ io.on(
           ) {
             socket.emit(
               'authError',
-              'Password მინიმუმ 6 სიმბოლო.'
+              'პაროლი მინიმუმ 6 სიმბოლო უნდა იყოს.'
             );
 
             return;
@@ -2870,7 +3294,7 @@ io.on(
           ) {
             socket.emit(
               'authError',
-              'Username უკვე არსებობს.'
+              'ეს მომხმარებელი უკვე არსებობს.'
             );
 
             return;
@@ -2881,40 +3305,62 @@ io.on(
               password
             );
 
-          const user =
-            defaults({
-              id:
-                uid('user'),
+          const user = {
+            id:
+              uid('user'),
 
-              username:
-                username,
+            userKey:
+              crypto
+                .randomBytes(24)
+                .toString('hex'),
 
-              passwordSalt:
-                passwordData.salt,
+            username:
+              username,
 
-              passwordHash:
-                passwordData.hash,
+            avatar:
+              validAvatar(
+                payload &&
+                payload.avatar
+              ),
 
-              avatar:
-                validAvatar(
-                  data.avatar
-                ),
+            passwordSalt:
+              passwordData.salt,
 
-              xp: 0,
-              wins: 0,
+            passwordHash:
+              passwordData.hash,
 
-              balance:
-                START_BALANCE,
+            balance:
+              START_BALANCE,
 
-              achievements:
-                [],
+            xp:
+              0,
 
-              quests:
-                defaultQuests(),
+            level:
+              1,
 
-              socketId:
-                socket.id
-            });
+            wins:
+              0,
+
+            achievements:
+              [],
+
+            quests:
+              defaultQuests(),
+
+            cosmetics: {
+              tableSkin:
+                'classic',
+
+              cardSkin:
+                'red'
+            },
+
+            socketId:
+              socket.id,
+
+            roomId:
+              null
+          };
 
           users.set(
             user.id,
@@ -2925,14 +3371,18 @@ io.on(
             user.id;
 
           const token =
-            newSession(user);
+            newSession(
+              user
+            );
 
           await saveUsersNow();
 
           socket.emit(
             'authSuccess',
             {
-              token: token,
+              token:
+                token,
+
               profile:
                 profile(user)
             }
@@ -2951,61 +3401,104 @@ io.on(
       }
     );
 
-    /* ---------------- LOGIN ---------------- */
+    /* --------------------------------------------------------
+       LOGIN
+       -------------------------------------------------------- */
 
     socket.on(
       'login',
-      async function (data) {
-        data = data || {};
+      async function (payload) {
+        try {
+          const username =
+            clean(
+              payload &&
+              payload.username
+            );
 
-        const user =
-          findUser(
-            data.username
+          const password =
+            String(
+              payload &&
+              payload.password ||
+              ''
+            );
+
+          const user =
+            findUser(
+              username
+            );
+
+          if (!user) {
+            socket.emit(
+              'authError',
+              'მომხმარებელი ვერ მოიძებნა.'
+            );
+
+            return;
+          }
+
+          if (
+            !isTester(
+              user.username
+            )
+          ) {
+            const valid =
+              await checkPassword(
+                password,
+                user
+              );
+
+            if (!valid) {
+              socket.emit(
+                'authError',
+                'პაროლი არასწორია.'
+              );
+
+              return;
+            }
+          }
+
+          defaults(user);
+
+          user.socketId =
+            socket.id;
+
+          socket.data.userId =
+            user.id;
+
+          const token =
+            newSession(
+              user
+            );
+
+          socket.emit(
+            'authSuccess',
+            {
+              token:
+                token,
+
+              profile:
+                profile(user)
+            }
           );
 
-        if (
-          !user ||
-          !(
-            await checkPassword(
-              data.password || '',
-              user
-            )
-          )
-        ) {
+          reconnectPlayer(
+            socket,
+            user
+          );
+        } catch (error) {
+          console.error(
+            '[LOGIN]',
+            error
+          );
+
           socket.emit(
             'authError',
-            'Username ან Password არასწორია.'
+            'ავტორიზაცია ვერ შესრულდა.'
           );
-
-          return;
         }
-
-        user.socketId =
-          socket.id;
-
-        socket.data.userId =
-          user.id;
-
-        const token =
-          newSession(user);
-
-        socket.emit(
-          'authSuccess',
-          {
-            token: token,
-            profile:
-              profile(user)
-          }
-        );
-
-        recover(
-          socket,
-          user
-        );
       }
     );
-
-    /* ---------------- TESTER ---------------- */
+        /* ---------------- TESTER ---------------- */
 
     socket.on(
       'testerLogin',
@@ -3299,7 +3792,11 @@ io.on(
           ![
             'tomato',
             'egg',
-            'paper'
+            'paper',
+            'bomb',
+            'beer',
+            'ice',
+            'rose'
           ].includes(type)
         ) {
           return;
@@ -3458,7 +3955,7 @@ io.on(
 
               /*
                 Active game:
-                bot takeover after 30 seconds.
+                bot takeover after reconnect grace period.
               */
 
               if (
@@ -3544,6 +4041,11 @@ function cleanupRoom(room) {
     room.botTimer = null;
   }
 
+  if (room.trickTimer) {
+    clearTimeout(room.trickTimer);
+    room.trickTimer = null;
+  }
+
   room.players.forEach(
     function (player) {
       if (
@@ -3568,315 +4070,758 @@ const PAGE = String.raw`<!doctype html>
 <html lang="ka">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#07110e">
+<meta
+  name="viewport"
+  content="width=device-width,initial-scale=1,viewport-fit=cover"
+>
+<meta
+  name="theme-color"
+  content="#07110e"
+>
 
 <title>Written Bura</title>
 
 <style>
-*{box-sizing:border-box}
 
-:root{
- --bg:#07110e;
- --glass:rgba(7,20,17,.78);
- --gold:#e5bd61;
- --felt:#073f2d;
- --felt2:#052a20;
- --wood:#492718;
- --text:#f7f3e8;
- --muted:#9eb1aa;
- --red:#7c1725;
- --green:#1ba66d
+/* ============================================================
+   GLOBAL
+   ============================================================ */
+
+* {
+  box-sizing: border-box;
 }
 
-html,body{
- margin:0;
- min-height:100%;
- font-family:Arial,"Noto Sans Georgian",sans-serif;
- background:#050b09;
- color:var(--text)
+:root {
+  --bg: #07110e;
+  --glass: rgba(7,20,17,.78);
+  --gold: #e5bd61;
+
+  --felt: #073f2d;
+  --felt2: #052a20;
+
+  --wood: #492718;
+
+  --text: #f7f3e8;
+  --muted: #9eb1aa;
+
+  --red: #7c1725;
+  --green: #1ba66d;
+
+  /*
+    Strongly differentiated suit colors.
+  */
+
+  --spades: #111111;
+  --hearts: #e63946;
+  --diamonds: #0077b6;
+  --clubs: #2a9d8f;
 }
 
-body{overflow-x:hidden}
+html,
+body {
+  margin: 0;
+  min-height: 100%;
 
-button,input,select{font:inherit}
-button{cursor:pointer}
-.hidden{display:none!important}
+  font-family:
+    Arial,
+    "Noto Sans Georgian",
+    sans-serif;
 
-.bg{
- position:fixed;
- inset:0;
- z-index:-5;
- background:
-  radial-gradient(circle at 50% 20%,rgba(21,121,82,.18),transparent 35%),
-  linear-gradient(135deg,#040806,#0b1c16 50%,#050907)
+  background:
+    #050b09;
+
+  color:
+    var(--text);
 }
 
-.bg:after{
- content:"♠   ♥   ♦   ♣";
- position:absolute;
- inset:0;
- display:grid;
- place-items:center;
- font-size:min(20vw,260px);
- letter-spacing:4vw;
- color:rgba(255,255,255,.018);
- filter:blur(2px)
+body {
+  overflow-x: hidden;
 }
 
-.glass{
- background:
-  linear-gradient(
-   135deg,
-   rgba(255,255,255,.08),
-   rgba(255,255,255,.025)
-  );
- border:1px solid rgba(255,255,255,.12);
- backdrop-filter:blur(18px);
- box-shadow:0 20px 70px rgba(0,0,0,.35)
+button,
+input,
+select {
+  font: inherit;
 }
 
-#auth,#lobby{
- width:min(1100px,94vw);
- margin:35px auto
+button {
+  cursor: pointer;
 }
 
-.brand{
- font-size:30px;
- font-weight:900;
- letter-spacing:.5px
+.hidden {
+  display: none !important;
 }
 
-.brand span{color:var(--gold)}
+.bg {
+  position: fixed;
+  inset: 0;
 
-.authbox{
- width:min(520px,100%);
- margin:10vh auto;
- padding:28px;
- border-radius:28px
+  z-index: -5;
+
+  background:
+    radial-gradient(
+      circle at 50% 20%,
+      rgba(21,121,82,.18),
+      transparent 35%
+    ),
+    linear-gradient(
+      135deg,
+      #040806,
+      #0b1c16 50%,
+      #050907
+    );
 }
 
-.tabs{
- display:flex;
- gap:8px;
- margin:20px 0
+.bg:after {
+  content:
+    "♠   ♥   ♦   ♣";
+
+  position: absolute;
+  inset: 0;
+
+  display: grid;
+  place-items: center;
+
+  font-size:
+    min(20vw,260px);
+
+  letter-spacing:
+    4vw;
+
+  color:
+    rgba(255,255,255,.018);
+
+  filter:
+    blur(2px);
+}
+
+.glass {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255,255,255,.08),
+      rgba(255,255,255,.025)
+    );
+
+  border:
+    1px solid
+    rgba(255,255,255,.12);
+
+  backdrop-filter:
+    blur(18px);
+
+  box-shadow:
+    0 20px 70px
+    rgba(0,0,0,.35);
+}
+
+/* ============================================================
+   AUTH / LOBBY
+   ============================================================ */
+
+#auth,
+#lobby {
+  width:
+    min(1100px,94vw);
+
+  margin:
+    35px auto;
+}
+
+.brand {
+  font-size:
+    30px;
+
+  font-weight:
+    900;
+
+  letter-spacing:
+    .5px;
+}
+
+.brand span {
+  color:
+    var(--gold);
+}
+
+.authbox {
+  width:
+    min(520px,100%);
+
+  margin:
+    10vh auto;
+
+  padding:
+    28px;
+
+  border-radius:
+    28px;
+}
+
+.tabs {
+  display:
+    flex;
+
+  gap:
+    8px;
+
+  margin:
+    20px 0;
 }
 
 .tabs button,
-.smallBtn{
- border:1px solid rgba(255,255,255,.12);
- background:#10231d;
- color:white;
- border-radius:12px;
- padding:10px 15px
+.smallBtn {
+  border:
+    1px solid
+    rgba(255,255,255,.12);
+
+  background:
+    #10231d;
+
+  color:
+    white;
+
+  border-radius:
+    12px;
+
+  padding:
+    10px 15px;
 }
 
-.tabs button.active{
- background:var(--gold);
- color:#15100a
+.tabs button.active {
+  background:
+    var(--gold);
+
+  color:
+    #15100a;
 }
 
-.field{
- width:100%;
- padding:13px;
- margin:7px 0;
- border-radius:13px;
- border:1px solid #29443a;
- background:#081612;
- color:white
+.field {
+  width:
+    100%;
+
+  padding:
+    13px;
+
+  margin:
+    7px 0;
+
+  border-radius:
+    13px;
+
+  border:
+    1px solid
+    #29443a;
+
+  background:
+    #081612;
+
+  color:
+    white;
 }
 
-.primary{
- border:0;
- background:
-  linear-gradient(
-   135deg,
-   #e8c76e,
-   #a87523
-  );
- color:#171006;
- font-weight:900;
- padding:13px 18px;
- border-radius:14px;
- box-shadow:
-  0 8px 25px
-  rgba(229,189,97,.22)
+.primary {
+  border:
+    0;
+
+  background:
+    linear-gradient(
+      135deg,
+      #e8c76e,
+      #a87523
+    );
+
+  color:
+    #171006;
+
+  font-weight:
+    900;
+
+  padding:
+    13px 18px;
+
+  border-radius:
+    14px;
+
+  box-shadow:
+    0 8px 25px
+    rgba(229,189,97,.22);
 }
 
-.avatarChoices{
- display:flex;
- gap:8px;
- flex-wrap:wrap;
- margin:10px 0
+.avatarChoices {
+  display:
+    flex;
+
+  gap:
+    8px;
+
+  flex-wrap:
+    wrap;
+
+  margin:
+    10px 0;
 }
 
-.avatarChoice{
- font-size:25px;
- background:#10231d;
- border:2px solid transparent;
- border-radius:50%;
- width:48px;
- height:48px
+.avatarChoice {
+  font-size:
+    25px;
+
+  background:
+    #10231d;
+
+  border:
+    2px solid
+    transparent;
+
+  border-radius:
+    50%;
+
+  width:
+    48px;
+
+  height:
+    48px;
 }
 
-.avatarChoice.on{
- border-color:var(--gold)
+.avatarChoice.on {
+  border-color:
+    var(--gold);
 }
 
-.top{
- display:flex;
- justify-content:space-between;
- align-items:center;
- gap:12px;
- margin-bottom:18px
+.top {
+  display:
+    flex;
+
+  justify-content:
+    space-between;
+
+  align-items:
+    center;
+
+  gap:
+    12px;
+
+  margin-bottom:
+    18px;
 }
 
-.profile{
- display:flex;
- align-items:center;
- gap:10px
+.profile {
+  display:
+    flex;
+
+  align-items:
+    center;
+
+  gap:
+    10px;
 }
 
-.profileAvatar{
- width:52px;
- height:52px;
- border-radius:50%;
- display:grid;
- place-items:center;
- font-size:27px;
- border:2px solid var(--gold);
- overflow:hidden
+.profileAvatar {
+  width:
+    52px;
+
+  height:
+    52px;
+
+  border-radius:
+    50%;
+
+  display:
+    grid;
+
+  place-items:
+    center;
+
+  font-size:
+    27px;
+
+  border:
+    2px solid
+    var(--gold);
+
+  overflow:
+    hidden;
 }
 
 .profileAvatar img,
-.avatar img{
- width:100%;
- height:100%;
- object-fit:cover
+.avatar img {
+  width:
+    100%;
+
+  height:
+    100%;
+
+  object-fit:
+    cover;
 }
 
-.level{
- font-size:11px;
- background:var(--gold);
- color:#171006;
- border-radius:20px;
- padding:3px 8px;
- font-weight:900
+.level {
+  font-size:
+    11px;
+
+  background:
+    var(--gold);
+
+  color:
+    #171006;
+
+  border-radius:
+    20px;
+
+  padding:
+    3px 8px;
+
+  font-weight:
+    900;
 }
 
-.grid{
- display:grid;
- grid-template-columns:1.2fr .8fr;
- gap:16px
+.grid {
+  display:
+    grid;
+
+  grid-template-columns:
+    1.2fr .8fr;
+
+  gap:
+    16px;
 }
 
-.panel{
- padding:18px;
- border-radius:22px
+.panel {
+  padding:
+    18px;
+
+  border-radius:
+    22px;
 }
 
 .tableRow,
-.tourRow{
- display:flex;
- align-items:center;
- justify-content:space-between;
- gap:12px;
- padding:12px;
- border-bottom:
-  1px solid
-  rgba(255,255,255,.08)
+.tourRow {
+  display:
+    flex;
+
+  align-items:
+    center;
+
+  justify-content:
+    space-between;
+
+  gap:
+    12px;
+
+  padding:
+    12px;
+
+  border-bottom:
+    1px solid
+    rgba(255,255,255,.08);
 }
 
-.stakes{
- display:flex;
- gap:8px;
- flex-wrap:wrap
+.stakes {
+  display:
+    flex;
+
+  gap:
+    8px;
+
+  flex-wrap:
+    wrap;
 }
 
-.stake{
- padding:10px 14px;
- border-radius:12px;
- background:#10231d;
- color:white;
- border:1px solid #315247
+.stake {
+  padding:
+    10px 14px;
+
+  border-radius:
+    12px;
+
+  background:
+    #10231d;
+
+  color:
+    white;
+
+  border:
+    1px solid
+    #315247;
 }
 
-.stake.on{
- background:var(--gold);
- color:#181108
+.stake.on {
+  background:
+    var(--gold);
+
+  color:
+    #181108;
 }
 
-.quest{
- padding:10px;
- background:rgba(0,0,0,.18);
- border-radius:12px;
- margin:8px 0
+.quest {
+  padding:
+    10px;
+
+  background:
+    rgba(0,0,0,.18);
+
+  border-radius:
+    12px;
+
+  margin:
+    8px 0;
 }
 
-.progress{
- height:7px;
- background:#172720;
- border-radius:10px;
- overflow:hidden;
- margin-top:6px
+.progress {
+  height:
+    7px;
+
+  background:
+    #172720;
+
+  border-radius:
+    10px;
+
+  overflow:
+    hidden;
+
+  margin-top:
+    6px;
 }
 
-.progress i{
- display:block;
- height:100%;
- background:var(--gold)
+.progress i {
+  display:
+    block;
+
+  height:
+    100%;
+
+  background:
+    var(--gold);
 }
 
-.error{
- color:#ff8994;
- min-height:20px;
- margin:8px 0
+.error {
+  color:
+    #ff8994;
+
+  min-height:
+    20px;
+
+  margin:
+    8px 0;
 }
 
-/* GAME */
+/* ============================================================
+   GAME
+   ============================================================ */
 
-#game{
- min-height:100vh;
- padding:10px 12px 20px
+#game {
+  min-height:
+    100vh;
+
+  padding:
+    10px 12px 20px;
 }
 
-.hud{
- display:flex;
- justify-content:center;
- gap:8px;
- flex-wrap:wrap;
- position:relative;
- z-index:20
+.hud {
+  display:
+    flex;
+
+  justify-content:
+    center;
+
+  gap:
+    8px;
+
+  flex-wrap:
+    wrap;
+
+  position:
+    relative;
+
+  z-index:
+    20;
 }
 
-.pill{
- padding:8px 13px;
- border-radius:999px;
- background:rgba(6,18,15,.72);
- border:
-  1px solid
-  rgba(255,255,255,.13);
- box-shadow:
-  0 6px 22px #0006
+.pill {
+  padding:
+    8px 13px;
+
+  border-radius:
+    999px;
+
+  background:
+    rgba(6,18,15,.72);
+
+  border:
+    1px solid
+    rgba(255,255,255,.13);
+
+  box-shadow:
+    0 6px 22px
+    #0006;
 }
 
-.pill b{color:var(--gold)}
-
-.gameButtons{
- position:absolute;
- right:15px;
- top:12px;
- display:flex;
- gap:6px;
- z-index:30
+.pill b {
+  color:
+    var(--gold);
 }
 
-.arena{
- height:calc(100vh - 75px);
- min-height:620px;
- position:relative;
- display:flex;
- align-items:center;
+.gameButtons {
+  position:
+    absolute;
+
+  right:
+    15px;
+
+  top:
+    12px;
+
+  display:
+    flex;
+
+  gap:
+    6px;
+
+  z-index:
+    30;
+}
+
+/* ============================================================
+   PREMIUM FELT THEMES
+   ============================================================ */
+
+.arena {
+  --felt-main:
+    #073f2d;
+
+  --felt-edge:
+    #052a20;
+}
+
+.arena[data-felt="classic"] {
+  --felt-main:
+    #087443;
+
+  --felt-edge:
+    #034b2b;
+}
+
+.arena[data-felt="royal"] {
+  --felt-main:
+    #123f76;
+
+  --felt-edge:
+    #071f43;
+}
+
+.arena[data-felt="burgundy"] {
+  --felt-main:
+    #731d31;
+
+  --felt-edge:
+    #3e0d1a;
+}
+
+.arena[data-felt="violet"] {
+  --felt-main:
+    #4c286f;
+
+  --felt-edge:
+    #241134;
+}
+
+.arena[data-felt="obsidian"] {
+  --felt-main:
+    #1b1d20;
+
+  --felt-edge:
+    #08090b;
+}
+
+.feltControls {
+  position:
+    absolute;
+
+  left:
+    15px;
+
+  top:
+    12px;
+
+  z-index:
+    35;
+
+  display:
+    flex;
+
+  align-items:
+    center;
+
+  gap:
+    7px;
+
+  padding:
+    6px 9px;
+
+  border-radius:
+    14px;
+
+  background:
+    rgba(3,10,8,.74);
+
+  border:
+    1px solid
+    rgba(255,255,255,.12);
+
+  backdrop-filter:
+    blur(12px);
+}
+
+.feltControls label {
+  font-size:
+    12px;
+
+  color:
+    #e6d7ae;
+
+  font-weight:
+    800;
+}
+
+.feltControls select {
+  max-width:
+    150px;
+
+  padding:
+    6px 8px;
+
+  border-radius:
+    9px;
+
+  border:
+    1px solid
+    rgba(255,255,255,.16);
+
+  color:
+    white;
+
+  background:
+    #0d1715;
+}
+
+/* ============================================================
+   TABLE / ARENA
+   ============================================================ */
+
+.arena {
+  height:
+    calc(100vh - 75px);
+
+  min-height:
+    620px;
+
+  position:
+    relative;
+
+  display:
+    flex;
+     align-items:center;
  justify-content:center
 }
 
@@ -3936,6 +4881,114 @@ button{cursor:pointer}
   inset 0 0 90px #001a12,
   inset 0 0 0 3px
   rgba(255,255,255,.05)
+}
+
+
+/* Premium felt themes — visual only; game/session logic is untouched. */
+
+.table[data-felt="classic"]{
+ background:
+  radial-gradient(
+   circle at 45% 35%,
+   rgba(31,132,87,.30),
+   transparent 42%
+  ),
+  repeating-radial-gradient(
+   circle at 30% 30%,
+   rgba(255,255,255,.018) 0 1px,
+   transparent 1px 4px
+  ),
+  linear-gradient(
+   145deg,
+   #07513a,
+   #052b21
+  )
+}
+
+.table[data-felt="royal"]{
+ background:
+  radial-gradient(
+   circle at 45% 35%,
+   rgba(0,119,182,.34),
+   transparent 42%
+  ),
+  repeating-radial-gradient(
+   circle at 30% 30%,
+   rgba(255,255,255,.018) 0 1px,
+   transparent 1px 4px
+  ),
+  linear-gradient(
+   145deg,
+   #123d72,
+   #071c3d
+  )
+}
+
+.table[data-felt="burgundy"]{
+ background:
+  radial-gradient(
+   circle at 45% 35%,
+   rgba(230,57,70,.25),
+   transparent 42%
+  ),
+  repeating-radial-gradient(
+   circle at 30% 30%,
+   rgba(255,255,255,.018) 0 1px,
+   transparent 1px 4px
+  ),
+  linear-gradient(
+   145deg,
+   #6d1d2b,
+   #2c0912
+  )
+}
+
+.table[data-felt="violet"]{
+ background:
+  radial-gradient(
+   circle at 45% 35%,
+   rgba(132,76,207,.28),
+   transparent 42%
+  ),
+  repeating-radial-gradient(
+   circle at 30% 30%,
+   rgba(255,255,255,.018) 0 1px,
+   transparent 1px 4px
+  ),
+  linear-gradient(
+   145deg,
+   #4a246d,
+   #1b0b31
+  )
+}
+
+.table[data-felt="obsidian"]{
+ background:
+  radial-gradient(
+   circle at 45% 35%,
+   rgba(255,255,255,.08),
+   transparent 42%
+  ),
+  repeating-radial-gradient(
+   circle at 30% 30%,
+   rgba(255,255,255,.015) 0 1px,
+   transparent 1px 4px
+  ),
+  linear-gradient(
+   145deg,
+   #24282b,
+   #090b0d
+  )
+}
+
+.feltPicker{
+ border:1px solid #ffffff20;
+ background:#0d1d18;
+ color:#f7f3e8;
+ border-radius:10px;
+ padding:8px 10px;
+ font-weight:800;
+ max-width:180px
 }
 
 .table:after{
@@ -4021,43 +5074,177 @@ button{cursor:pointer}
  display:flex;
  gap:3px;
  margin:0 -8px;
- animation:drop .28s ease
+ perspective:900px;
+ transform-style:preserve-3d;
+ animation:
+  drop .52s
+  cubic-bezier(.16,.84,.24,1)
 }
 
 @keyframes drop{
+ 0%{
+  transform:
+   translate3d(0,-72px,70px)
+   rotateX(18deg)
+   rotateZ(-7deg)
+   scale(.72);
+  opacity:0;
+  filter:
+   blur(2px)
+   brightness(1.25)
+ }
+
+ 65%{
+  transform:
+   translate3d(0,7px,0)
+   rotateX(-3deg)
+   rotateZ(1deg)
+   scale(1.035);
+  opacity:1
+ }
+
+ 100%{
+  transform:
+   translate3d(0,0,0)
+   rotateX(0)
+   rotateZ(0)
+   scale(1);
+  opacity:1;
+  filter:none
+ }
+}
+
+.playGroup .card{
+ transition:
+  transform .32s
+   cubic-bezier(.2,.8,.2,1),
+  box-shadow .32s ease,
+  filter .32s ease;
+ transform-style:preserve-3d
+}
+
+.card.cutGlow{
+ animation:
+  winnerGlow .72s
+  ease-in-out
+  infinite alternate;
+
+ box-shadow:
+  0 0 0 2px #ffe7a0,
+  0 0 24px #ffd35a,
+  0 0 52px #e9a928,
+  0 15px 30px #0009
+}
+
+@keyframes winnerGlow{
  from{
   transform:
-   translate3d(0,-35px,0)
-   scale(.8);
-  opacity:0
+   translateY(0)
+   translateZ(0)
+   scale(1);
+
+  filter:
+   brightness(1.02)
  }
+
  to{
-  transform:none;
-  opacity:1
+  transform:
+   translateY(-5px)
+   translateZ(18px)
+   scale(1.045);
+
+  filter:
+   brightness(1.28)
+   saturate(1.18)
+ }
+}
+
+.hand .card{
+ animation:
+  dealCard .58s
+  cubic-bezier(.18,.8,.2,1)
+  both
+}
+
+.hand .card:nth-child(2){
+ animation-delay:.045s
+}
+
+.hand .card:nth-child(3){
+ animation-delay:.09s
+}
+
+.hand .card:nth-child(4){
+ animation-delay:.135s
+}
+
+.hand .card:nth-child(5){
+ animation-delay:.18s
+}
+
+@keyframes dealCard{
+ from{
+  opacity:0;
+
+  transform:
+   translate3d(0,-210px,90px)
+   rotateY(32deg)
+   rotateZ(-12deg)
+   scale(.55);
+
+  filter:
+   blur(2px)
+ }
+
+ 70%{
+  opacity:1;
+
+  transform:
+   translate3d(0,5px,0)
+   rotateY(-4deg)
+   rotateZ(1deg)
+   scale(1.03)
+ }
+
+ to{
+  opacity:1;
+  filter:none
  }
 }
 
 .card{
  width:66px;
  height:96px;
+
  border-radius:10px;
+
  background:
   linear-gradient(
    145deg,
    #fff,
    #e9e5dc
   );
- border:1px solid #fff;
+
+ border:
+  1px solid #fff;
+
  box-shadow:
   0 8px 18px #0008;
+
  position:relative;
+
  color:#101010;
+
  display:flex;
  flex-direction:column;
+
  align-items:center;
  justify-content:center;
+
  font-weight:900;
+
  user-select:none;
+
  transition:
   .2s transform,
   .2s box-shadow,
@@ -4066,15 +5253,19 @@ button{cursor:pointer}
 
 .card:before{
  content:"";
+
  position:absolute;
  inset:1px;
+
  border-radius:9px;
+
  background:
   linear-gradient(
    120deg,
    rgba(255,255,255,.75),
    transparent 35%
   );
+
  pointer-events:none
 }
 
@@ -4086,25 +5277,34 @@ button{cursor:pointer}
  font-size:25px
 }
 
+/*
+  Suit colors:
+  ♠ Spades   #111111
+  ♥ Hearts   #e63946
+  ♦ Diamonds #0077b6
+  ♣ Clubs    #2a9d8f
+*/
+
 .card.hearts{
- color:#7d1423
+ color:#e63946
 }
 
 .card.diamonds{
- color:#102e69
+ color:#0077b6
 }
 
 .card.clubs{
- color:#08704c
+ color:#2a9d8f
 }
 
 .card.spades{
- color:#111
+ color:#111111
 }
 
 .card.selected{
  transform:
   translateY(-20px)!important;
+
  box-shadow:
   0 0 0 3px #e7bd54,
   0 0 28px #ffd86b,
@@ -4119,9 +5319,13 @@ button{cursor:pointer}
 
 .seat{
  position:absolute;
+
  z-index:12;
+
  text-align:center;
+
  min-width:120px;
+
  transform:
   translate(-50%,-50%)
 }
@@ -4134,15 +5338,24 @@ button{cursor:pointer}
 .avatar{
  width:70px;
  height:70px;
+
  border-radius:50%;
+
  background:#17251f;
- border:3px solid #d4a944;
+
+ border:
+  3px solid #d4a944;
+
  display:grid;
  place-items:center;
+
  font-size:34px;
+
  overflow:hidden;
+
  box-shadow:
   0 7px 20px #0008;
+
  transition:.25s
 }
 
@@ -4151,20 +5364,25 @@ button{cursor:pointer}
   0 0 0 4px #f0c85b55,
   0 0 30px #f6ce5d,
   0 0 55px #43d893;
+
  animation:
-  pulse 1s infinite alternate
+  pulse 1s
+  infinite alternate
 }
 
 @keyframes pulse{
  to{
-  transform:scale(1.06)
+  transform:
+   scale(1.06)
  }
 }
 
 .seatName{
  font-weight:900;
+
  text-shadow:
   0 2px 5px #000;
+
  margin-top:4px
 }
 
@@ -4175,33 +5393,51 @@ button{cursor:pointer}
 
 .levelBadge{
  position:absolute;
+
  right:-5px;
  bottom:2px;
- background:var(--gold);
+
+ background:
+  var(--gold);
+
  color:#1a1208;
+
  border-radius:20px;
- padding:3px 7px;
+
+ padding:
+  3px 7px;
+
  font-size:10px;
+
  font-weight:900
 }
 
 .timerRing{
  position:absolute;
+
  inset:-7px;
+
  border-radius:50%;
- border:3px solid transparent;
+
+ border:
+  3px solid transparent;
+
  pointer-events:none
 }
 
 .seat.active .timerRing{
- border-top-color:#f4cf65;
- border-right-color:#49d69a
+ border-top-color:
+  #f4cf65;
+
+ border-right-color:
+  #49d69a
 }
 
 .me{
  left:50%;
  bottom:2%;
  top:auto;
+
  transform:
   translateX(-50%)
 }
@@ -4223,19 +5459,28 @@ button{cursor:pointer}
 
 .hand{
  position:absolute;
+
  left:50%;
  bottom:4%;
+
  transform:
   translateX(-50%);
+
  display:flex;
+
  justify-content:center;
+
  z-index:20;
+
  height:125px
 }
 
 .hand .card{
  margin-left:-18px;
- transform-origin:50% 150%;
+
+ transform-origin:
+  50% 150%;
+
  cursor:pointer
 }
 
@@ -4250,22 +5495,35 @@ button{cursor:pointer}
 
 .actionArea{
  position:absolute;
+
  left:50%;
  bottom:145px;
+
  transform:
   translateX(-50%);
+
  z-index:30;
+
  text-align:center
 }
 
 .playBtn{
  min-width:180px;
+
  border:0;
+
  border-radius:16px;
- padding:13px 20px;
- background:#234037;
+
+ padding:
+  13px 20px;
+
+ background:
+  #234037;
+
  color:#778c85;
+
  font-weight:900;
+
  box-shadow:
   0 8px 20px #0007
 }
@@ -4277,30 +5535,40 @@ button{cursor:pointer}
    #f0ce73,
    #a87826
   );
+
  color:#171007;
+
  box-shadow:
   0 0 25px #e7bd5555
 }
 
 .status{
  font-size:12px;
+
  margin-top:6px;
+
  text-shadow:
   0 2px 4px #000
 }
 
 .side{
  position:absolute;
+
  right:16px;
  top:75px;
+
  width:260px;
+
  z-index:25
 }
 
 .score{
  border-radius:18px;
+
  padding:13px;
+
  max-height:380px;
+
  overflow:auto
 }
 
@@ -4310,114 +5578,202 @@ button{cursor:pointer}
 
 .scorePlayer{
  display:flex;
- justify-content:space-between;
+
+ justify-content:
+  space-between;
+
  padding:5px 0
 }
 
 .total{
  font-size:18px;
- color:var(--gold);
+
+ color:
+  var(--gold);
+
  font-weight:900
 }
 
 .historyItem{
  font-size:11px;
+
  padding:6px;
+
  border-top:
   1px solid #ffffff12;
+
  color:#cad7d1
 }
 
 .reactions{
  margin-top:8px;
+
  border-radius:16px;
+
  padding:9px;
+
  display:flex;
+
  flex-wrap:wrap;
+
  gap:5px
 }
 
 .reactions button{
  border:
   1px solid #ffffff18;
+
  background:#10231d;
+
  color:white;
+
  border-radius:10px;
+
  padding:7px;
+
  font-size:11px
 }
 
 .giftMenu{
  position:fixed;
+
  z-index:100;
+
  background:#0b1915;
+
  border:
   1px solid #d9b65b;
+
  border-radius:15px;
+
  padding:8px;
+
  display:flex;
+
  gap:5px;
+
  box-shadow:
   0 15px 50px #000
 }
 
 .giftMenu button{
  font-size:24px;
+
  background:#13261f;
+
  border:0;
+
  border-radius:10px;
+
  padding:8px
 }
 
 .projectile{
  position:fixed;
+
  z-index:999;
- font-size:35px;
+
+ font-size:38px;
+
  pointer-events:none;
+
+ will-change:
+  transform,
+  filter;
+
+ filter:
+  drop-shadow(
+   0 12px 8px #0008
+  );
+
  transition:
-  transform .7s
-  cubic-bezier(.2,.7,.2,1)
+  transform .72s
+   cubic-bezier(.18,.78,.2,1),
+  filter .2s ease
 }
 
 .splat{
  position:absolute;
+
  inset:0;
+
  display:grid;
+
  place-items:center;
+
  font-size:48px;
+
  z-index:50;
+
  pointer-events:none;
+
  animation:
   splat .25s ease
 }
 
 @keyframes splat{
- from{
+ 0%{
   transform:
-   scale(.2)
-   rotate(-40deg)
+   scale(.15)
+   rotate(-35deg);
+
+  opacity:0
  }
- to{
+
+ 35%{
+  transform:
+   scale(1.35)
+   rotate(8deg);
+
+  opacity:1;
+
+  filter:
+   drop-shadow(
+    0 0 20px #fff8
+   )
+ }
+
+ 70%{
+  transform:
+   scale(.95)
+   rotate(-3deg);
+
+  opacity:1
+ }
+
+ 100%{
   transform:
    scale(1)
-   rotate(0)
+   rotate(0);
+
+  opacity:1
  }
 }
 
 .toast{
  position:fixed;
+
  left:50%;
  top:85px;
+
  transform:
   translateX(-50%);
+
  z-index:500;
- padding:13px 20px;
+
+ padding:
+  13px 20px;
+
  border-radius:15px;
+
  background:#111f1a;
+
  border:
   1px solid #d7b45c;
+
  box-shadow:
   0 15px 50px #000;
+
  animation:
   toast .3s ease
 }
@@ -4426,7 +5782,7 @@ button{cursor:pointer}
  from{
   transform:
    translate(-50%,-20px);
-  opacity:0
+     opacity:0
  }
 }
 
@@ -4808,6 +6164,33 @@ button{cursor:pointer}
 
  <div class="gameButtons">
 
+  <select
+   id="feltPicker"
+   class="feltPicker"
+   title="მაგიდის ფერი">
+
+   <option value="classic">
+    🟢 Classic Green
+   </option>
+
+   <option value="royal">
+    🔵 Royal Blue
+   </option>
+
+   <option value="burgundy">
+    🔴 Burgundy
+   </option>
+
+   <option value="violet">
+    🟣 Dark Violet
+   </option>
+
+   <option value="obsidian">
+    ⚫ Obsidian
+   </option>
+
+  </select>
+
   <button
    id="rulesBtn"
    class="smallBtn">
@@ -4933,6 +6316,22 @@ button{cursor:pointer}
 
  <button data-gift="paper">
   🧻
+ </button>
+
+ <button data-gift="bomb">
+  💣
+ </button>
+
+ <button data-gift="beer">
+  🍺
+ </button>
+
+ <button data-gift="ice">
+  ❄️
+ </button>
+
+ <button data-gift="rose">
+  🌹
  </button>
 
 </div>
@@ -5306,7 +6705,7 @@ function speak(text) {
    speechSynthesis.cancel();
 
    speechSynthesis.speak(
-    utterance
+       utterance
    );
 
    if (!georgian) {
@@ -6205,7 +7604,7 @@ function cardNode(
 ) {
  var node =
   document.createElement(
-   'div'
+     'div'
   );
 
  node.className =
@@ -6667,10 +8066,10 @@ function renderScore() {
    function (player) {
     return (
      '<div class="scorePlayer">' +
-      '<span>' +
-       esc(player.name) +
-      '</span>' +
-      '<span class="total">' +
+      '<span>' + esc(player.name) +
+       '<small style="display:block;color:#9eb1aa;font-size:9px">მიმდინარე ხელი: ' +
+       (player.currentHandPoints || 0) + ' pt</small></span>' +
+      '<span class="total" title="მიმდინარე ჯამური ქულა">' +
        player.totalPoints +
       '</span>' +
      '</div>'
@@ -6679,7 +8078,7 @@ function renderScore() {
   ).join('');
 
  el('history').innerHTML =
-  current.history
+  (current.history || [])
    .slice()
    .reverse()
    .map(
@@ -6689,42 +8088,57 @@ function renderScore() {
        .map(
         function (player) {
          var raw =
-          history.rawScores &&
-          history.rawScores[
-           player.id
-          ] != null
-           ? history.rawScores[
-              player.id
-             ]
+          history.rawScores && history.rawScores[player.id] != null
+           ? history.rawScores[player.id]
            : 0;
 
-         return (
-          esc(player.name) +
-          ': ' +
-          raw +
-          'pt'
-         );
+         var written =
+          history.scores && history.scores[player.id] != null
+           ? history.scores[player.id]
+           : raw;
+
+         return esc(player.name) + ': ' + raw + ' pt' +
+          (written !== raw ? ' → ' + written : '');
         }
        )
        .join(' · ');
 
      return (
       '<div class="historyItem">' +
-       'Round ' +
-       history.hand +
-       ' (' +
-       symbol(
-        history.trump
-       ) +
-       ')' +
-       '<br>' +
-       parts +
+       '<strong>პარტია ' + (history.party || Math.ceil(history.hand / 5)) +
+       ' · ხელი #' + history.hand +
+       ' · კოზირი ' + symbol(history.trump) + '</strong>' +
+       '<br>' + parts +
       '</div>'
      );
     }
    )
    .join('');
 }
+
+/* ============================================================
+   PREMIUM FELT SELECTOR
+   ============================================================ */
+
+(function initFeltPicker() {
+ var picker = el('feltPicker');
+ var table = el('table');
+ if (!picker || !table) return;
+
+ var allowed = ['classic','royal','burgundy','violet','obsidian'];
+ var saved = localStorage.getItem('buraFeltTheme') || 'classic';
+ if (!allowed.includes(saved)) saved = 'classic';
+
+ picker.value = saved;
+ table.dataset.felt = saved;
+
+ picker.addEventListener('change', function () {
+  var value = allowed.includes(picker.value) ? picker.value : 'classic';
+  table.dataset.felt = value;
+  localStorage.setItem('buraFeltTheme', value);
+  sfx('select');
+ });
+})();
 
 /* ============================================================
    RULES / MUTE
@@ -6887,7 +8301,11 @@ function animateThrowable(data) {
  var icons = {
   tomato:'🍅',
   egg:'🥚',
-  paper:'🧻'
+  paper:'🧻',
+  bomb:'💣',
+  beer:'🍺',
+  ice:'❄️',
+  rose:'🌹'
  };
 
  var projectile =
@@ -6966,28 +8384,63 @@ function animateThrowable(data) {
    splat.className =
     'splat';
 
+   var impacts = {
+    tomato:'💥🍅',
+    egg:'🍳',
+    paper:'🧻',
+    bomb:'💥',
+    beer:'🍻✨',
+    ice:'❄️✨',
+    rose:'🌹✨'
+   };
+
    splat.textContent =
-    data.type === 'tomato'
-     ? '💥🍅'
-     : (
-       data.type === 'egg'
-        ? '🍳'
-        : '🧻'
-      );
+    impacts[data.type] || '💥';
 
    to.parentElement
     .appendChild(
      splat
     );
 
+   var impactFreq =
+    data.type === 'bomb' ? 85 :
+    data.type === 'ice' ? 920 :
+    data.type === 'rose' ? 660 :
+    data.type === 'beer' ? 310 :
+    data.type === 'egg' ? 230 : 150;
+
    tone(
-    data.type === 'egg'
-     ? 230
-     : 150,
-    .12,
-    'triangle',
-    .05
+    impactFreq,
+    .14,
+    data.type === 'bomb'
+     ? 'sawtooth'
+     : 'triangle',
+    .055
    );
+
+   if (data.type === 'bomb') {
+    tone(
+     55,.22,
+     'square',
+     .035,.04
+    );
+   }
+
+   if (data.type === 'ice') {
+    tone(
+     1250,.08,
+     'sine',
+     .025,.05
+    );
+   }
+
+   if (data.type === 'rose') {
+    tone(
+     880,.10,
+     'sine',
+     .02,.05
+    );
+   }
 
    setTimeout(
     function () {
