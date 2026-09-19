@@ -62,6 +62,33 @@ const TURN_SECONDS = 20;
 const RECONNECT_MS = 30000;
 const TRICK_CLEAR_DELAY = 1800;
 
+const RANK_TIERS = [
+  { name: 'Bronze', icon: '🥉', min: 0 },
+  { name: 'Silver', icon: '🥈', min: 1000 },
+  { name: 'Gold', icon: '🥇', min: 1200 },
+  { name: 'Platinum', icon: '💠', min: 1400 },
+  { name: 'Diamond', icon: '👑', min: 1600 }
+];
+
+const FREE_FELTS = [
+  'classic',
+  'royal',
+  'wine',
+  'violet',
+  'obsidian'
+];
+
+const SHOP_ITEMS = [
+  { id: 'felt_sunset', type: 'felt', name: 'მზის ჩასვლა', price: 300 },
+  { id: 'felt_neon', type: 'felt', name: 'ნეონი', price: 300 },
+  { id: 'felt_galaxy', type: 'felt', name: 'გალაქტიკა', price: 500 },
+  { id: 'felt_rosegold', type: 'felt', name: 'ვარდისფერი ოქრო', price: 500 },
+  { id: 'frame_bronze', type: 'frame', name: 'ბრინჯაოს ჩარჩო', price: 150 },
+  { id: 'frame_silver', type: 'frame', name: 'ვერცხლის ჩარჩო', price: 250 },
+  { id: 'frame_gold', type: 'frame', name: 'ოქროს ჩარჩო', price: 400 },
+  { id: 'frame_diamond', type: 'frame', name: 'ბრილიანტის ჩარჩო', price: 700 }
+];
+
 const CAPACITIES = [3, 4];
 const STAKES = [5, 10, 25, 50, 100];
 const MAX_PARTIES = 4;
@@ -145,6 +172,33 @@ function isTester(name) {
   return lower(name) === TESTER_NAME.toLowerCase();
 }
 
+function rankOf(rating) {
+  let tier = RANK_TIERS[0];
+
+  RANK_TIERS.forEach(function (candidate) {
+    if (rating >= candidate.min) {
+      tier = candidate;
+    }
+  });
+
+  return tier;
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysBetween(a, b) {
+  const msPerDay = 24 * 60 * 60 * 1000;
+
+  return Math.round(
+    (
+      new Date(b + 'T00:00:00Z').getTime() -
+      new Date(a + 'T00:00:00Z').getTime()
+    ) / msPerDay
+  );
+}
+
 function suitSymbol(suit) {
   return {
     spades: '♠',
@@ -200,6 +254,97 @@ function defaults(user) {
     user.quests = defaultQuests();
   }
 
+  /*
+    Rating / ranking.
+  */
+
+  user.rating = Number(
+    user.rating === undefined
+      ? 1000
+      : user.rating
+  );
+
+  /*
+    Virtual coin economy (cosmetics only,
+    never redeemable for real money).
+  */
+
+  user.coins = Number(
+    user.coins === undefined
+      ? 200
+      : user.coins
+  );
+
+  user.inventory =
+    user.inventory &&
+    typeof user.inventory === 'object'
+      ? user.inventory
+      : {};
+
+  user.inventory.felts =
+    Array.isArray(user.inventory.felts)
+      ? user.inventory.felts
+      : FREE_FELTS.slice();
+
+  user.inventory.frames =
+    Array.isArray(user.inventory.frames)
+      ? user.inventory.frames
+      : ['none'];
+
+  user.equipped =
+    user.equipped &&
+    typeof user.equipped === 'object'
+      ? user.equipped
+      : { felt: 'classic', frame: 'none' };
+
+  /*
+    Lifetime stats.
+  */
+
+  user.stats =
+    user.stats &&
+    typeof user.stats === 'object'
+      ? user.stats
+      : {};
+
+  user.stats.handsPlayed = Number(user.stats.handsPlayed || 0);
+  user.stats.handsWon = Number(user.stats.handsWon || 0);
+  user.stats.partiesPlayed = Number(user.stats.partiesPlayed || 0);
+  user.stats.partiesWon = Number(user.stats.partiesWon || 0);
+  user.stats.biggestWin = Number(user.stats.biggestWin || 0);
+  user.stats.winStreak = Number(user.stats.winStreak || 0);
+  user.stats.bestWinStreak = Number(user.stats.bestWinStreak || 0);
+  user.stats.recentParties =
+    Array.isArray(user.stats.recentParties)
+      ? user.stats.recentParties.slice(-20)
+      : [];
+
+  /*
+    Friends.
+  */
+
+  user.friends = Array.isArray(user.friends)
+    ? user.friends
+    : [];
+
+  /*
+    Daily login streak.
+  */
+
+  user.loginStreak = Number(user.loginStreak || 0);
+  user.lastLoginDate = user.lastLoginDate || null;
+
+  /*
+    Responsible-gaming self-exclusion.
+    null = not excluded, 'forever' = permanent,
+    or an ISO date string until which login is blocked.
+  */
+
+  user.selfExcludedUntil =
+    user.selfExcludedUntil || null;
+
+  user.language = user.language || 'ka';
+
   return user;
 }
 
@@ -215,7 +360,22 @@ function profile(user) {
     wins: user.wins,
     balance: user.balance,
     quests: user.quests,
-    achievements: user.achievements
+    achievements: user.achievements,
+
+    rating: user.rating,
+    rank: rankOf(user.rating),
+
+    coins: user.coins,
+    inventory: user.inventory,
+    equipped: user.equipped,
+
+    stats: user.stats,
+    friends: user.friends,
+
+    loginStreak: user.loginStreak,
+
+    selfExcludedUntil: user.selfExcludedUntil,
+    language: user.language
   };
 }
 
@@ -381,6 +541,72 @@ function saveLater() {
   }, 4000);
 }
 
+function friendSummary(user) {
+  if (!user) {
+    return null;
+  }
+
+  defaults(user);
+
+  return {
+    id: user.id,
+    username: user.username,
+    avatar: user.avatar,
+    level: user.level,
+    rating: user.rating,
+    rank: rankOf(user.rating),
+    online: !!user.socketId
+  };
+}
+
+function applyLoginStreak(user) {
+  defaults(user);
+
+  const key = todayKey();
+
+  if (user.lastLoginDate === key) {
+    return 0;
+  }
+
+  const diff =
+    user.lastLoginDate
+      ? daysBetween(user.lastLoginDate, key)
+      : null;
+
+  if (diff === 1) {
+    user.loginStreak += 1;
+  } else {
+    user.loginStreak = 1;
+  }
+
+  user.lastLoginDate = key;
+
+  const bonus =
+    Math.min(200, 20 * user.loginStreak);
+
+  user.coins =
+    Number(user.coins || 0) + bonus;
+
+  saveLater();
+
+  return bonus;
+}
+
+function isExcluded(user) {
+  if (!user || !user.selfExcludedUntil) {
+    return false;
+  }
+
+  if (user.selfExcludedUntil === 'forever') {
+    return true;
+  }
+
+  return (
+    new Date(user.selfExcludedUntil).getTime() >
+    Date.now()
+  );
+}
+
 function newSession(user) {
   const token = crypto
     .randomBytes(32)
@@ -469,7 +695,7 @@ function playedTable(user, roomId) {
    CARDS
    ============================================================ */
 
-function createDeck() {
+function canonicalDeck() {
   const cards = [];
 
   SUITS.forEach(function (suit) {
@@ -482,19 +708,81 @@ function createDeck() {
     });
   });
 
+  return cards;
+}
+
+/*
+  Deterministic byte stream derived from a seed via
+  chained SHA-256 hashing. Given the same seed this
+  always produces the same shuffle, which is what
+  lets a revealed seed be independently verified.
+*/
+
+function seedStream(seed) {
+  let block = crypto
+    .createHash('sha256')
+    .update(String(seed))
+    .digest();
+
+  let cursor = 0;
+
+  return function nextByte() {
+    if (cursor >= block.length) {
+      block = crypto
+        .createHash('sha256')
+        .update(block)
+        .digest();
+
+      cursor = 0;
+    }
+
+    return block[cursor++];
+  };
+}
+
+function seededShuffle(cards, seed) {
+  const nextByte = seedStream(seed);
+  const arr = cards.slice();
+
   for (
-    let i = cards.length - 1;
+    let i = arr.length - 1;
     i > 0;
     i--
   ) {
-    const j = rand(0, i);
+    const j = nextByte() % (i + 1);
 
-    const temp = cards[i];
-    cards[i] = cards[j];
-    cards[j] = temp;
+    const temp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = temp;
   }
 
-  return cards;
+  return arr;
+}
+
+function makeFairness(room, handIndex) {
+  const seed = crypto
+    .randomBytes(32)
+    .toString('hex');
+
+  const hash = crypto
+    .createHash('sha256')
+    .update(seed)
+    .digest('hex');
+
+  return {
+    seed: seed,
+    hash: hash,
+    seedInput:
+      seed + ':' + room.id + ':' + handIndex,
+    revealed: false
+  };
+}
+
+function createDeck() {
+  return seededShuffle(
+    canonicalDeck(),
+    crypto.randomBytes(16).toString('hex')
+  );
 }
 
 function cardPoints(card) {
@@ -865,12 +1153,19 @@ function fillBots(room) {
    ============================================================ */
 
 function startHand(room, previousGame) {
-  const cards = createDeck();
-
   const handIndex =
     previousGame
       ? previousGame.handIndex + 1
       : 1;
+
+  const fairness =
+    makeFairness(room, handIndex);
+
+  const cards =
+    seededShuffle(
+      canonicalDeck(),
+      fairness.seedInput
+    );
 
   const partyIndex =
     Math.ceil(handIndex / 5);
@@ -970,7 +1265,9 @@ function startHand(room, previousGame) {
 
     nextLeader: leader,
 
-    partyStart: partyStart
+    partyStart: partyStart,
+
+    fairness: fairness
   };
 
   return room.game;
@@ -1024,6 +1321,11 @@ function buildState(
     totalHands: game.totalHands,
 
     trump: game.trump,
+
+    fairnessHash:
+      game.fairness
+        ? game.fairness.hash
+        : null,
 
     deckCount: game.deck.length,
 
@@ -1088,6 +1390,13 @@ function buildState(
 
             wins:
               player.wins,
+
+            frame:
+              (
+                userOf(player) &&
+                userOf(player).equipped &&
+                userOf(player).equipped.frame
+              ) || 'none',
 
             isCurrent:
               index ===
@@ -1834,6 +2143,9 @@ async function finishHand(room) {
   game.lastScores =
     writtenScores;
 
+  const fairnessForHand =
+    game.fairness || null;
+
   game.history.push({
     hand:
       game.handIndex,
@@ -1854,8 +2166,76 @@ async function finishHand(room) {
       Object.assign(
         {},
         writtenScores
-      )
+      ),
+
+    fairness:
+      fairnessForHand
+        ? {
+            seed:
+              fairnessForHand.seed,
+
+            hash:
+              fairnessForHand.hash
+          }
+        : null
   });
+
+  if (fairnessForHand) {
+    io
+      .to(room.id)
+      .emit(
+        'fairnessReveal',
+        {
+          hand:
+            game.handIndex,
+
+          seed:
+            fairnessForHand.seed,
+
+          hash:
+            fairnessForHand.hash
+        }
+      );
+  }
+
+  const maxRaw =
+    Math.max.apply(
+      null,
+      room.players.map(
+        function (player) {
+          return rawScores[player.id] || 0;
+        }
+      )
+    );
+
+  room.players.forEach(
+    function (player) {
+      const user =
+        userOf(player);
+
+      if (!user) {
+        return;
+      }
+
+      defaults(user);
+
+      user.stats.handsPlayed += 1;
+
+      if (
+        maxRaw > 0 &&
+        rawScores[player.id] === maxRaw
+      ) {
+        user.stats.handsWon += 1;
+      }
+
+      if (user.socketId) {
+        io.to(user.socketId).emit(
+          'profileUpdate',
+          profile(user)
+        );
+      }
+    }
+  );
 
   /*
     Every 5 hands = party.
@@ -1895,6 +2275,115 @@ async function finishHand(room) {
       }
     );
 
+    const humanRatings =
+      room.players
+        .map(function (player) {
+          const user = userOf(player);
+          return user ? user.rating : 1000;
+        });
+
+    const avgRating =
+      humanRatings.reduce(
+        function (sum, value) {
+          return sum + value;
+        },
+        0
+      ) / (humanRatings.length || 1);
+
+    room.players.forEach(
+      function (player) {
+        const user =
+          userOf(player);
+
+        if (!user) {
+          return;
+        }
+
+        defaults(user);
+
+        const isWinner =
+          winners.indexOf(player) >= 0;
+
+        const delta =
+          player.total -
+          Number(
+            game.partyStart[
+              player.id
+            ] || 0
+          );
+
+        /*
+          Simple ELO-style rating update against
+          the room's average rating.
+        */
+
+        const expected =
+          1 /
+          (
+            1 +
+            Math.pow(
+              10,
+              (avgRating - user.rating) / 400
+            )
+          );
+
+        const actual =
+          isWinner ? 1 : 0;
+
+        user.rating =
+          Math.max(
+            0,
+            Math.round(
+              user.rating +
+              32 * (actual - expected)
+            )
+          );
+
+        user.stats.partiesPlayed += 1;
+
+        if (
+          !user.stats.recentParties
+        ) {
+          user.stats.recentParties = [];
+        }
+
+        user.stats.recentParties.push({
+          won: isWinner,
+          delta: delta,
+          rating: user.rating,
+          date: today()
+        });
+
+        user.stats.recentParties =
+          user.stats.recentParties.slice(-20);
+
+        if (isWinner) {
+          user.stats.partiesWon += 1;
+          user.stats.winStreak += 1;
+
+          if (
+            user.stats.winStreak >
+            user.stats.bestWinStreak
+          ) {
+            user.stats.bestWinStreak =
+              user.stats.winStreak;
+          }
+
+          if (
+            delta >
+            user.stats.biggestWin
+          ) {
+            user.stats.biggestWin = delta;
+          }
+
+          user.coins =
+            Number(user.coins || 0) + 50;
+        } else {
+          user.stats.winStreak = 0;
+        }
+      }
+    );
+
     winners.forEach(
       function (player) {
         const user =
@@ -1918,6 +2407,20 @@ async function finishHand(room) {
 
         player.level =
           user.level;
+      }
+    );
+
+    room.players.forEach(
+      function (player) {
+        const user =
+          userOf(player);
+
+        if (user && user.socketId) {
+          io.to(user.socketId).emit(
+            'profileUpdate',
+            profile(user)
+          );
+        }
       }
     );
   }
@@ -2817,6 +3320,34 @@ function recover(
   }
 }
 
+function recoverDomino(socket, user) {
+  const room = Array.from(dominoRooms.values()).find((candidate) =>
+    candidate.players.some((player) => player.userId === user.id)
+  );
+
+  if (!room) return;
+
+  const player = room.players.find((item) => item.userId === user.id);
+  if (!player || player.isBot) return;
+
+  if (player.reconnectTimer) {
+    clearTimeout(player.reconnectTimer);
+    player.reconnectTimer = null;
+  }
+
+  player.connected = true;
+  player.socketId = socket.id;
+
+  socket.data.dominoRoomId = room.id;
+  socket.data.dominoPlayerId = player.id;
+
+  socket.join('domino:' + room.id);
+
+  if (room.game) {
+    socket.emit('dominoStateUpdate', buildDominoState(room, player.id, isTester(player.name)));
+  }
+}
+
 /* ============================================================
    SOCKET.IO
    ============================================================ */
@@ -2827,10 +3358,17 @@ io.on(
     socket.data.userId = null;
     socket.data.roomId = null;
     socket.data.playerId = null;
+    socket.data.dominoRoomId = null;
+    socket.data.dominoPlayerId = null;
 
     socket.emit(
       'lobbyTables',
       lobbyData()
+    );
+
+    socket.emit(
+      'dominoLobbyTables',
+      dominoLobbyData()
     );
 
     socket.emit(
@@ -2991,6 +3529,21 @@ io.on(
           return;
         }
 
+        if (isExcluded(user)) {
+          socket.emit(
+            'authError',
+            'შენ თვითონ გამორთე ანგარიში (თვითგამორიცხვა). ' +
+            (
+              user.selfExcludedUntil === 'forever'
+                ? 'ეს გადაწყვეტილება მუდმივია.'
+                : 'ხელახლა შეძლებ შესვლას: ' +
+                  user.selfExcludedUntil
+            )
+          );
+
+          return;
+        }
+
         user.socketId =
           socket.id;
 
@@ -3000,12 +3553,21 @@ io.on(
         const token =
           newSession(user);
 
+        const streakBonus =
+          applyLoginStreak(user);
+
         socket.emit(
           'authSuccess',
           {
             token: token,
             profile:
-              profile(user)
+              profile(user),
+
+            streakBonus:
+              streakBonus,
+
+            loginStreak:
+              user.loginStreak
           }
         );
 
@@ -3013,6 +3575,8 @@ io.on(
           socket,
           user
         );
+
+        recoverDomino(socket, user);
       }
     );
 
@@ -3072,6 +3636,15 @@ io.on(
           );
         }
 
+        if (isExcluded(user)) {
+          socket.emit(
+            'authError',
+            'ეს ანგარიში თვითგამორიცხულია.'
+          );
+
+          return;
+        }
+
         user.tester = true;
         user.socketId = socket.id;
 
@@ -3081,6 +3654,9 @@ io.on(
         const token =
           newSession(user);
 
+        const streakBonus =
+          applyLoginStreak(user);
+
         socket.emit(
           'authSuccess',
           {
@@ -3088,7 +3664,13 @@ io.on(
               token,
 
             profile:
-              profile(user)
+              profile(user),
+
+            streakBonus:
+              streakBonus,
+
+            loginStreak:
+              user.loginStreak
           }
         );
 
@@ -3096,6 +3678,8 @@ io.on(
           socket,
           user
         );
+
+        recoverDomino(socket, user);
 
         saveLater();
       }
@@ -3137,18 +3721,35 @@ io.on(
           return;
         }
 
+        if (isExcluded(user)) {
+          socket.emit(
+            'sessionInvalid'
+          );
+
+          return;
+        }
+
         user.socketId =
           socket.id;
 
         socket.data.userId =
           user.id;
 
+        const streakBonus =
+          applyLoginStreak(user);
+
         socket.emit(
           'authSuccess',
           {
             token: token,
             profile:
-              profile(user)
+              profile(user),
+
+            streakBonus:
+              streakBonus,
+
+            loginStreak:
+              user.loginStreak
           }
         );
 
@@ -3156,6 +3757,8 @@ io.on(
           socket,
           user
         );
+
+        recoverDomino(socket, user);
       }
     );
 
@@ -3405,11 +4008,411 @@ io.on(
       }
     );
 
+    /* ---------------- LEADERBOARD ---------------- */
+
+    socket.on(
+      'getLeaderboard',
+      function () {
+        const top =
+          Array
+            .from(users.values())
+            .map(function (user) {
+              defaults(user);
+              return user;
+            })
+            .sort(function (a, b) {
+              return b.rating - a.rating;
+            })
+            .slice(0, 20)
+            .map(friendSummary);
+
+        socket.emit(
+          'leaderboardData',
+          top
+        );
+      }
+    );
+
+    /* ---------------- FRIENDS ---------------- */
+
+    socket.on(
+      'getFriends',
+      function () {
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        if (!user) {
+          return;
+        }
+
+        defaults(user);
+
+        const list =
+          user.friends
+            .map(function (id) {
+              return friendSummary(
+                users.get(id)
+              );
+            })
+            .filter(Boolean);
+
+        socket.emit(
+          'friendsList',
+          list
+        );
+      }
+    );
+
+    socket.on(
+      'addFriend',
+      function (data) {
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        if (!user) {
+          return;
+        }
+
+        defaults(user);
+
+        data = data || {};
+
+        const target =
+          findUser(
+            data.username
+          );
+
+        if (
+          !target ||
+          target.id === user.id
+        ) {
+          socket.emit(
+            'errorMessage',
+            'მომხმარებელი ვერ მოიძებნა.'
+          );
+
+          return;
+        }
+
+        if (
+          user.friends.indexOf(
+            target.id
+          ) < 0
+        ) {
+          user.friends.push(
+            target.id
+          );
+
+          saveLater();
+        }
+
+        socket.emit(
+          'friendsList',
+          user.friends
+            .map(function (id) {
+              return friendSummary(
+                users.get(id)
+              );
+            })
+            .filter(Boolean)
+        );
+      }
+    );
+
+    socket.on(
+      'removeFriend',
+      function (data) {
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        if (!user) {
+          return;
+        }
+
+        defaults(user);
+
+        data = data || {};
+
+        user.friends =
+          user.friends.filter(
+            function (id) {
+              return id !== data.id;
+            }
+          );
+
+        saveLater();
+
+        socket.emit(
+          'friendsList',
+          user.friends
+            .map(function (id) {
+              return friendSummary(
+                users.get(id)
+              );
+            })
+            .filter(Boolean)
+        );
+      }
+    );
+
+    /* ---------------- SHOP / COSMETICS ---------------- */
+
+    socket.on(
+      'buyItem',
+      function (data) {
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        if (!user) {
+          return;
+        }
+
+        defaults(user);
+
+        data = data || {};
+
+        const item =
+          SHOP_ITEMS.find(
+            function (candidate) {
+              return (
+                candidate.id ===
+                data.itemId
+              );
+            }
+          );
+
+        if (!item) {
+          return;
+        }
+
+        const owned =
+          item.type === 'felt'
+            ? user.inventory.felts
+            : user.inventory.frames;
+
+        const ownedKey =
+          item.type === 'felt'
+            ? item.id.replace('felt_', '')
+            : item.id.replace('frame_', '');
+
+        if (owned.indexOf(ownedKey) >= 0) {
+          socket.emit(
+            'errorMessage',
+            'უკვე გაქვს ეს ნივთი.'
+          );
+
+          return;
+        }
+
+        if (user.coins < item.price) {
+          socket.emit(
+            'errorMessage',
+            'არასაკმარისი მონეტები.'
+          );
+
+          return;
+        }
+
+        user.coins -= item.price;
+        owned.push(ownedKey);
+
+        saveLater();
+
+        socket.emit(
+          'profileUpdate',
+          profile(user)
+        );
+
+        socket.emit(
+          'purchaseSuccess',
+          { itemId: item.id }
+        );
+      }
+    );
+
+    socket.on(
+      'equipCosmetic',
+      function (data) {
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        if (!user) {
+          return;
+        }
+
+        defaults(user);
+
+        data = data || {};
+
+        if (
+          data.slot === 'felt' &&
+          user.inventory.felts.indexOf(
+            data.value
+          ) >= 0
+        ) {
+          user.equipped.felt = data.value;
+        }
+
+        if (
+          data.slot === 'frame' &&
+          user.inventory.frames.indexOf(
+            data.value
+          ) >= 0
+        ) {
+          user.equipped.frame = data.value;
+        }
+
+        saveLater();
+
+        socket.emit(
+          'profileUpdate',
+          profile(user)
+        );
+      }
+    );
+
+    /* ---------------- RESPONSIBLE GAMING ---------------- */
+
+    socket.on(
+      'selfExclude',
+      function (data) {
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        if (!user) {
+          return;
+        }
+
+        data = data || {};
+
+        const duration =
+          String(data.duration || '');
+
+        if (duration === '24h') {
+          user.selfExcludedUntil =
+            new Date(
+              Date.now() + 24 * 3600 * 1000
+            ).toISOString();
+        } else if (duration === '7d') {
+          user.selfExcludedUntil =
+            new Date(
+              Date.now() + 7 * 24 * 3600 * 1000
+            ).toISOString();
+        } else if (duration === '30d') {
+          user.selfExcludedUntil =
+            new Date(
+              Date.now() + 30 * 24 * 3600 * 1000
+            ).toISOString();
+        } else if (duration === 'forever') {
+          user.selfExcludedUntil = 'forever';
+        } else {
+          return;
+        }
+
+        saveUsersNow().catch(
+          console.error
+        );
+
+        socket.emit(
+          'selfExcluded',
+          { until: user.selfExcludedUntil }
+        );
+      }
+    );
+
+    /* ---------------- DOMINO ---------------- */
+
+    socket.on('dominoJoinTable', function (data) {
+      joinDominoRoom(socket, data || {});
+    });
+
+    socket.on('dominoPlayTile', function (data) {
+      data = data || {};
+      const room = dominoRooms.get(socket.data.dominoRoomId);
+      if (!room || !room.game) return;
+
+      const player = room.players.find((p) => p.id === socket.data.dominoPlayerId);
+      if (!player) return;
+
+      const active = room.players[room.game.current];
+      if (!active || active.id !== player.id) {
+        socket.emit('dominoError', 'ახლა შენი სვლა არ არის.');
+        return;
+      }
+
+      dominoPlaceTile(room, player, data.tileId, data.side);
+    });
+
     /* ---------------- DISCONNECT ---------------- */
 
     socket.on(
       'disconnect',
       function () {
+        const dominoRoom =
+          dominoRooms.get(
+            socket.data.dominoRoomId
+          );
+
+        if (dominoRoom) {
+          const dominoPlayer =
+            dominoRoom.players.find(
+              (p) => p.id === socket.data.dominoPlayerId
+            );
+
+          if (dominoPlayer) {
+            dominoPlayer.connected = false;
+            dominoPlayer.socketId = null;
+
+            broadcastDominoGame(dominoRoom);
+
+            if (dominoPlayer.reconnectTimer) {
+              clearTimeout(dominoPlayer.reconnectTimer);
+            }
+
+            dominoPlayer.reconnectTimer = setTimeout(function () {
+              dominoPlayer.reconnectTimer = null;
+              if (dominoPlayer.connected) return;
+
+              if (dominoRoom.game && !dominoRoom.game.gameOver) {
+                dominoPlayer.isBot = true;
+                if (!dominoPlayer.name.includes('🤖')) {
+                  dominoPlayer.name += ' 🤖';
+                }
+                dominoPlayer.avatar = '🤖';
+
+                if (dominoRoom.players[dominoRoom.game.current] === dominoPlayer) {
+                  scheduleDominoBot(dominoRoom);
+                }
+
+                broadcastDominoGame(dominoRoom);
+                return;
+              }
+
+              const index = dominoRoom.players.indexOf(dominoPlayer);
+              if (index >= 0) dominoRoom.players.splice(index, 1);
+
+              if (dominoRoom.players.length === 0) {
+                dominoCleanupRoom(dominoRoom);
+                dominoRooms.delete(dominoRoom.id);
+              }
+
+              broadcastDominoLobby();
+            }, RECONNECT_MS);
+          }
+        }
+
         const room =
           rooms.get(
             socket.data.roomId
@@ -3576,6 +4579,568 @@ function cleanupRoom(room) {
 }
 
 /* ============================================================
+   DOMINO — GAME ENGINE
+   ============================================================ */
+
+const DOMINO_CAPACITIES = [2, 3, 4];
+const DOMINO_ROUNDS_OPTIONS = [1, 2, 3, 4];
+const DOMINO_TURN_SECONDS = 25;
+
+const dominoRooms = new Map();
+
+function canonicalDominoSet() {
+  const tiles = [];
+  for (let a = 0; a <= 6; a++) {
+    for (let b = a; b <= 6; b++) {
+      tiles.push({ id: uid('tile'), a, b });
+    }
+  }
+  return tiles; // 28 tiles
+}
+
+function tilePips(tile) {
+  return tile.a + tile.b;
+}
+
+function handPips(hand) {
+  return hand.reduce((sum, t) => sum + tilePips(t), 0);
+}
+
+function tileMatchesEnd(tile, end) {
+  return end === null || tile.a === end || tile.b === end;
+}
+
+function dominoLobbyData() {
+  return Array.from(dominoRooms.values())
+    .filter((room) => !room.game && room.players.length < room.capacity)
+    .map((room) => ({
+      id: room.id,
+      name: room.name,
+      players: room.players.length,
+      capacity: room.capacity,
+      rounds: room.rounds
+    }));
+}
+
+function broadcastDominoLobby() {
+  io.emit('dominoLobbyTables', dominoLobbyData());
+}
+
+function makeDominoRoom(name, capacity, rounds) {
+  const room = {
+    id: uid('droom'),
+    name: clean(name) || 'Domino Table',
+    capacity: DOMINO_CAPACITIES.includes(Number(capacity)) ? Number(capacity) : 4,
+    rounds: DOMINO_ROUNDS_OPTIONS.includes(Number(rounds)) ? Number(rounds) : 1,
+    players: [],
+    game: null,
+    timer: null,
+    botTimer: null
+  };
+  dominoRooms.set(room.id, room);
+  broadcastDominoLobby();
+  return room;
+}
+
+function createDominoHumanPlayer(user, socket, guestName) {
+  return {
+    id: user ? user.id : uid('dguest'),
+    userId: user ? user.id : null,
+    name: user ? user.username : (clean(guestName) || 'Guest'),
+    avatar: user ? user.avatar : '😎',
+    socketId: socket.id,
+    isBot: false,
+    connected: true,
+    hand: [],
+    matchScore: 0,
+    xp: user ? user.xp : 0,
+    level: user ? user.level : 1,
+    reconnectTimer: null
+  };
+}
+
+function createDominoBot(number) {
+  return {
+    id: uid('dbot'),
+    userId: null,
+    name: 'BOT ' + number,
+    avatar: '🤖',
+    socketId: null,
+    isBot: true,
+    connected: true,
+    hand: [],
+    matchScore: 0,
+    xp: 0,
+    level: rand(2, 8),
+    reconnectTimer: null
+  };
+}
+
+function fillDominoBots(room) {
+  let number = 1;
+  while (room.players.length < room.capacity) {
+    room.players.push(createDominoBot(number++));
+  }
+}
+
+function dealDomino(players, deck) {
+  players.forEach((player) => { player.hand = []; });
+  let i = 0;
+  while (deck.length && players.some((p) => p.hand.length < 7)) {
+    const player = players[i % players.length];
+    if (player.hand.length < 7) {
+      player.hand.push(deck.pop());
+    }
+    i++;
+  }
+  return deck; // remaining tiles = boneyard
+}
+
+function findStartingPlayerIndex(players) {
+  let bestIndex = 0;
+  let bestScore = -1;
+  players.forEach((player, index) => {
+    player.hand.forEach((tile) => {
+      const isDouble = tile.a === tile.b;
+      const score = (isDouble ? 1000 : 0) + tilePips(tile);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    });
+  });
+  return bestIndex;
+}
+
+function startDominoRound(room, previousGame) {
+  const roundIndex = previousGame ? previousGame.roundIndex + 1 : 1;
+  const fairness = makeFairness(room, 'domino-' + roundIndex);
+  const deck = seededShuffle(canonicalDominoSet(), fairness.seedInput);
+  const boneyard = dealDomino(room.players, deck);
+  const startIndex = findStartingPlayerIndex(room.players);
+
+  room.game = {
+    roundIndex,
+    totalRounds: room.rounds,
+    chain: [],
+    leftEnd: null,
+    rightEnd: null,
+    boneyard,
+    current: startIndex,
+    passStreak: 0,
+    processing: false,
+    gameOver: false,
+    turnEndsAt: 0,
+    fairness,
+    history: previousGame ? previousGame.history : []
+  };
+
+  return room.game;
+}
+
+function dominoHasLegalMove(player, game) {
+  if (!game.chain.length) return true;
+  return player.hand.some((tile) => tileMatchesEnd(tile, game.leftEnd) || tileMatchesEnd(tile, game.rightEnd));
+}
+
+function dominoAutoDraw(room) {
+  const game = room.game;
+  const player = room.players[game.current];
+  let drewAny = false;
+
+  while (!dominoHasLegalMove(player, game) && game.boneyard.length) {
+    player.hand.push(game.boneyard.pop());
+    drewAny = true;
+  }
+
+  return drewAny;
+}
+
+function buildDominoState(room, viewerId, revealAll) {
+  const game = room.game;
+  if (!game) return null;
+
+  const hands = {};
+  room.players.forEach((player) => {
+    if (revealAll || player.id === viewerId) {
+      hands[player.id] = player.hand;
+    }
+  });
+
+  return {
+    roomId: room.id,
+    roomName: room.name,
+    capacity: room.capacity,
+    rounds: room.rounds,
+    viewerId,
+    roundIndex: game.roundIndex,
+    totalRounds: game.totalRounds,
+    chain: game.chain,
+    leftEnd: game.leftEnd,
+    rightEnd: game.rightEnd,
+    boneyardCount: game.boneyard.length,
+    currentTurnIndex: game.current,
+    processing: game.processing,
+    gameOver: game.gameOver,
+    turnEndsAt: game.turnEndsAt,
+    turnSeconds: DOMINO_TURN_SECONDS,
+    fairnessHash: game.fairness ? game.fairness.hash : null,
+    history: game.history,
+    hands,
+    players: room.players.map((player, index) => ({
+      id: player.id,
+      name: player.name,
+      avatar: player.avatar,
+      isBot: player.isBot,
+      connected: player.connected,
+      tileCount: player.hand.length,
+      matchScore: player.matchScore,
+      level: player.level,
+      frame: (userOf(player) && userOf(player).equipped && userOf(player).equipped.frame) || 'none',
+      isCurrent: index === game.current
+    }))
+  };
+}
+
+function broadcastDominoGame(room) {
+  if (!room || !room.game) return;
+  room.players.forEach((player) => {
+    if (player.isBot || !player.socketId || !player.connected) return;
+    io.to(player.socketId).emit('dominoStateUpdate', buildDominoState(room, player.id, isTester(player.name)));
+  });
+}
+
+function setDominoTurn(room, index) {
+  const game = room.game;
+  if (!game || game.gameOver) return;
+
+  if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+
+  game.current = index % room.players.length;
+
+  const drewSomething = dominoAutoDraw(room);
+  const player = room.players[game.current];
+
+  if (!dominoHasLegalMove(player, game)) {
+    // Forced pass — advance to next player.
+    game.passStreak += 1;
+
+    if (game.passStreak >= room.players.length) {
+      finishDominoRound(room, null); // blocked game
+      return;
+    }
+
+    setDominoTurn(room, game.current + 1);
+    return;
+  }
+
+  game.turnEndsAt = Date.now() + DOMINO_TURN_SECONDS * 1000;
+  room.timer = setTimeout(() => dominoAutoPlay(room), DOMINO_TURN_SECONDS * 1000);
+
+  broadcastDominoGame(room);
+  scheduleDominoBot(room);
+}
+
+function dominoPlaceTile(room, player, tileId, side) {
+  const game = room.game;
+  if (!game || game.processing || game.gameOver) return false;
+
+  const active = room.players[game.current];
+  if (!active || active.id !== player.id) return false;
+
+  const tileIndex = player.hand.findIndex((t) => t.id === tileId);
+  if (tileIndex < 0) return false;
+
+  const tile = player.hand[tileIndex];
+
+  if (!game.chain.length) {
+    game.chain.push({ id: tile.id, left: tile.a, right: tile.b });
+    game.leftEnd = tile.a;
+    game.rightEnd = tile.b;
+  } else {
+    const wantsLeft = side === 'left';
+    const targetEnd = wantsLeft ? game.leftEnd : game.rightEnd;
+    const otherEnd = wantsLeft ? game.rightEnd : game.leftEnd;
+
+    let matchSide = null;
+    if (tile.a === targetEnd || tile.b === targetEnd) {
+      matchSide = wantsLeft ? 'left' : 'right';
+    } else if (tile.a === otherEnd || tile.b === otherEnd) {
+      matchSide = wantsLeft ? 'right' : 'left';
+    } else {
+      if (player.socketId) io.to(player.socketId).emit('dominoError', 'ეს კამათელი აქ არ ერგება.');
+      return false;
+    }
+
+    if (matchSide === 'left') {
+      const outward = tile.a === game.leftEnd ? tile.b : tile.a;
+      game.chain.unshift({ id: tile.id, left: outward, right: game.leftEnd });
+      game.leftEnd = outward;
+    } else {
+      const outward = tile.a === game.rightEnd ? tile.b : tile.a;
+      game.chain.push({ id: tile.id, left: game.rightEnd, right: outward });
+      game.rightEnd = outward;
+    }
+  }
+
+  player.hand.splice(tileIndex, 1);
+  game.passStreak = 0;
+
+  io.to('domino:' + room.id).emit('dominoPlayFX', { playerId: player.id });
+
+  if (player.hand.length === 0) {
+    finishDominoRound(room, player);
+    return true;
+  }
+
+  setDominoTurn(room, game.current + 1);
+  return true;
+}
+
+async function finishDominoRound(room, wentOutPlayer) {
+  const game = room.game;
+  if (!game) return;
+
+  if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
+
+  game.processing = true;
+
+  const pipsByPlayer = {};
+  room.players.forEach((player) => { pipsByPlayer[player.id] = handPips(player.hand); });
+
+  let winner = wentOutPlayer;
+  let reason = 'out';
+
+  if (!winner) {
+    reason = 'blocked';
+    let minPips = Infinity;
+    room.players.forEach((player) => {
+      if (pipsByPlayer[player.id] < minPips) {
+        minPips = pipsByPlayer[player.id];
+        winner = player;
+      }
+    });
+  }
+
+  const awarded = room.players.reduce(
+    (sum, player) => (player.id === winner.id ? sum : sum + pipsByPlayer[player.id]),
+    0
+  );
+
+  winner.matchScore += awarded;
+
+  const fairnessForRound = game.fairness;
+  game.history.push({
+    round: game.roundIndex,
+    winnerId: winner.id,
+    winnerName: winner.name,
+    reason,
+    awarded,
+    pips: pipsByPlayer
+  });
+
+  if (fairnessForRound) {
+    io.to('domino:' + room.id).emit('dominoFairnessReveal', {
+      round: game.roundIndex,
+      seed: fairnessForRound.seed,
+      hash: fairnessForRound.hash
+    });
+  }
+
+  io.to('domino:' + room.id).emit('dominoRoundEnd', {
+    winnerId: winner.id,
+    winnerName: winner.name,
+    reason,
+    awarded,
+    pips: pipsByPlayer
+  });
+
+  if (game.roundIndex >= game.totalRounds) {
+    finishDominoMatch(room);
+    return;
+  }
+
+  setTimeout(() => {
+    if (!dominoRooms.has(room.id) || room.game !== game) return;
+
+    const nextGame = startDominoRound(room, game);
+    setDominoTurn(room, nextGame.current);
+  }, 2600);
+}
+
+async function finishDominoMatch(room) {
+  const game = room.game;
+  if (!game) return;
+
+  game.gameOver = true;
+
+  let champion = room.players[0];
+  room.players.forEach((player) => {
+    if (player.matchScore > champion.matchScore) champion = player;
+  });
+
+  const avgRating = room.players.reduce((sum, p) => {
+    const u = userOf(p);
+    return sum + (u ? u.rating : 1000);
+  }, 0) / (room.players.length || 1);
+
+  room.players.forEach((player) => {
+    const user = userOf(player);
+    if (!user) return;
+    defaults(user);
+
+    const isWinner = player.id === champion.id;
+    const expected = 1 / (1 + Math.pow(10, (avgRating - user.rating) / 400));
+    user.rating = Math.max(0, Math.round(user.rating + 24 * ((isWinner ? 1 : 0) - expected)));
+
+    user.stats.partiesPlayed += 1;
+    if (isWinner) {
+      user.stats.partiesWon += 1;
+      user.coins = Number(user.coins || 0) + 40;
+      addXP(user, 60);
+    } else {
+      addXP(user, 15);
+    }
+  });
+
+  await saveUsersNow();
+
+  io.to('domino:' + room.id).emit('dominoMatchEnd', { winnerId: champion.id, winnerName: champion.name });
+  broadcastDominoGame(room);
+}
+
+function dominoBotChoice(player, game) {
+  const legal = [];
+  player.hand.forEach((tile) => {
+    if (!game.chain.length) {
+      legal.push({ tile, side: 'right' });
+      return;
+    }
+    if (tileMatchesEnd(tile, game.leftEnd)) legal.push({ tile, side: 'left' });
+    if (tileMatchesEnd(tile, game.rightEnd)) legal.push({ tile, side: 'right' });
+  });
+
+  if (!legal.length) return null;
+
+  // Prefer playing doubles and higher-pip tiles first (simple heuristic).
+  legal.sort((a, b) => {
+    const da = a.tile.a === a.tile.b ? 1 : 0;
+    const db = b.tile.a === b.tile.b ? 1 : 0;
+    if (da !== db) return db - da;
+    return tilePips(b.tile) - tilePips(a.tile);
+  });
+
+  return legal[0];
+}
+
+function scheduleDominoBot(room) {
+  if (!room || !room.game || room.game.processing || room.game.gameOver) return;
+  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
+
+  const player = room.players[room.game.current];
+  if (!player || !player.isBot) return;
+
+  room.botTimer = setTimeout(() => {
+    room.botTimer = null;
+    if (!room.game || room.game.processing || room.game.gameOver) return;
+
+    const active = room.players[room.game.current];
+    if (!active || active.id !== player.id) return;
+
+    const choice = dominoBotChoice(player, room.game);
+    if (choice) {
+      dominoPlaceTile(room, player, choice.tile.id, choice.side);
+    }
+  }, rand(1000, 1700));
+}
+
+function dominoAutoPlay(room) {
+  if (!room || !room.game || room.game.processing || room.game.gameOver) return;
+  const player = room.players[room.game.current];
+  if (!player) return;
+
+  const choice = dominoBotChoice(player, room.game);
+  if (choice) {
+    dominoPlaceTile(room, player, choice.tile.id, choice.side);
+  }
+}
+
+function joinDominoRoom(socket, data) {
+  const user = users.get(socket.data.userId);
+
+  let room = data.roomId ? dominoRooms.get(data.roomId) : null;
+
+  if (room && (room.game || room.players.length >= room.capacity)) {
+    socket.emit('dominoError', 'მაგიდა აღარ არის თავისუფალი.');
+    return;
+  }
+
+  if (!room) {
+    room = makeDominoRoom(data.tableName, data.capacity, data.rounds);
+  }
+
+  let player = user
+    ? createDominoHumanPlayer(user, socket)
+    : createDominoHumanPlayer(null, socket, data.name);
+
+  const existing = user ? room.players.find((p) => p.userId === user.id) : null;
+
+  if (existing) {
+    player = existing;
+    player.socketId = socket.id;
+    player.connected = true;
+    player.isBot = false;
+    if (player.reconnectTimer) { clearTimeout(player.reconnectTimer); player.reconnectTimer = null; }
+  } else {
+    room.players.push(player);
+  }
+
+  socket.data.dominoRoomId = room.id;
+  socket.data.dominoPlayerId = player.id;
+  socket.join('domino:' + room.id);
+
+  if (isTester(player.name)) {
+    fillDominoBots(room);
+  }
+
+  if (room.players.length >= room.capacity) {
+    const game = startDominoRound(room);
+    io.to('domino:' + room.id).emit('dominoDealAnimation');
+    setDominoTurn(room, game.current);
+  } else {
+    io.to('domino:' + room.id).emit('dominoWaiting', { current: room.players.length, max: room.capacity });
+  }
+
+  broadcastDominoLobby();
+}
+
+function dominoCleanupRoom(room) {
+  if (!room) return;
+  if (room.timer) { clearTimeout(room.timer); room.timer = null; }
+  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
+  room.players.forEach((player) => {
+    if (player.reconnectTimer) { clearTimeout(player.reconnectTimer); player.reconnectTimer = null; }
+  });
+}
+
+setInterval(() => {
+  dominoRooms.forEach((room, id) => {
+    const connectedHumans = room.players.filter((p) => !p.isBot && p.connected);
+    if (room.game && room.game.gameOver && connectedHumans.length === 0) {
+      dominoCleanupRoom(room);
+      dominoRooms.delete(id);
+      return;
+    }
+    if (!room.game && room.players.length === 0) {
+      dominoCleanupRoom(room);
+      dominoRooms.delete(id);
+    }
+  });
+  broadcastDominoLobby();
+}, 60000);
+
+/* ============================================================
    MONOLITHIC PAGE
    ============================================================ */
 
@@ -3625,6 +5190,26 @@ const PAGE = String.raw`<!doctype html>
 .wood[data-felt="obsidian"]{
  --felt-a:#242428;
  --felt-b:#060607
+}
+
+.wood[data-felt="sunset"]{
+ --felt-a:#8a3d2e;
+ --felt-b:#4a1030
+}
+
+.wood[data-felt="neon"]{
+ --felt-a:#0d3b45;
+ --felt-b:#1a0a2e
+}
+
+.wood[data-felt="galaxy"]{
+ --felt-a:#241257;
+ --felt-b:#08061c
+}
+
+.wood[data-felt="rosegold"]{
+ --felt-a:#6b3f43;
+ --felt-b:#2e1a1c
 }
 
 html,body{
@@ -4623,6 +6208,277 @@ button{cursor:pointer}
  line-height:1.55
 }
 
+/* ===== PHASE 1: TOP UTILITY BAR ===== */
+
+.topBar{
+ display:flex;
+ gap:6px;
+ flex-wrap:wrap
+}
+
+.topBar button{
+ border:1px solid rgba(255,255,255,.14);
+ background:#10231d;
+ color:white;
+ border-radius:10px;
+ padding:8px 11px;
+ font-size:12px;
+ white-space:nowrap
+}
+
+.langSelect{
+ border:1px solid rgba(255,255,255,.14);
+ background:#10231d;
+ color:white;
+ border-radius:10px;
+ padding:8px 9px;
+ font-size:12px
+}
+
+/* ===== LEADERBOARD / FRIENDS / STATS / SHOP ROWS ===== */
+
+.lbRow,
+.friendRow,
+.shopRow{
+ display:flex;
+ align-items:center;
+ justify-content:space-between;
+ gap:10px;
+ padding:9px 4px;
+ border-bottom:1px solid rgba(255,255,255,.08)
+}
+
+.lbRank{
+ width:26px;
+ text-align:center;
+ font-weight:900;
+ color:var(--muted)
+}
+
+.lbRow:nth-child(1) .lbRank{color:#ffd75e}
+.lbRow:nth-child(2) .lbRank{color:#d7d7d7}
+.lbRow:nth-child(3) .lbRank{color:#d3925a}
+
+.lbWho,
+.friendWho{
+ display:flex;
+ align-items:center;
+ gap:8px;
+ min-width:0
+}
+
+.lbWho span,
+.friendWho span{
+ overflow:hidden;
+ text-overflow:ellipsis;
+ white-space:nowrap
+}
+
+.onlineDot{
+ width:8px;
+ height:8px;
+ border-radius:50%;
+ background:#3a4a44;
+ flex:none
+}
+
+.onlineDot.on{
+ background:#49d69a;
+ box-shadow:0 0 6px #49d69a
+}
+
+.rankPill{
+ font-size:11px;
+ padding:3px 8px;
+ border-radius:20px;
+ background:rgba(255,255,255,.08)
+}
+
+.shopItem{
+ display:flex;
+ flex-direction:column;
+ gap:8px;
+ padding:14px;
+ border-radius:16px;
+ background:rgba(255,255,255,.05);
+ border:1px solid rgba(255,255,255,.1)
+}
+
+.shopGrid{
+ display:grid;
+ grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+ gap:10px
+}
+
+.shopSwatch{
+ height:50px;
+ border-radius:10px
+}
+
+.shopBtn{
+ border:0;
+ border-radius:10px;
+ padding:8px;
+ font-weight:900;
+ background:linear-gradient(135deg,#e8c76e,#a87523);
+ color:#171006
+}
+
+.shopBtn.owned{
+ background:#28402f;
+ color:#8fbf9f
+}
+
+.shopBtn.locked{
+ background:#2a2a2a;
+ color:#777
+}
+
+.statGrid{
+ display:grid;
+ grid-template-columns:1fr 1fr;
+ gap:10px;
+ margin:12px 0
+}
+
+.statBox{
+ background:rgba(255,255,255,.05);
+ border-radius:14px;
+ padding:12px;
+ text-align:center
+}
+
+.statBox b{
+ display:block;
+ font-size:22px;
+ color:var(--gold)
+}
+
+.statBox small{
+ color:var(--muted)
+}
+
+.sparkRow{
+ display:flex;
+ align-items:flex-end;
+ gap:3px;
+ height:60px;
+ margin-top:10px
+}
+
+.sparkBar{
+ flex:1;
+ border-radius:3px 3px 0 0;
+ min-height:3px
+}
+
+.sparkBar.win{background:#49d69a}
+.sparkBar.loss{background:#e0616f}
+
+.friendAdd{
+ display:flex;
+ gap:8px;
+ margin-bottom:10px
+}
+
+.friendAdd input{
+ flex:1
+}
+
+/* ===== COSMETIC AVATAR FRAMES ===== */
+
+.avatar.frame-bronze,
+.profileAvatar.frame-bronze{
+ border-color:#c98a4b;
+ box-shadow:0 0 14px #c98a4b88
+}
+
+.avatar.frame-silver,
+.profileAvatar.frame-silver{
+ border-color:#d7d7e0;
+ box-shadow:0 0 14px #d7d7e088
+}
+
+.avatar.frame-gold,
+.profileAvatar.frame-gold{
+ border-color:#ffd75e;
+ box-shadow:0 0 18px #ffd75ea0
+}
+
+.avatar.frame-diamond,
+.profileAvatar.frame-diamond{
+ border-color:#7be0e6;
+ box-shadow:0 0 20px #7be0e6b0,0 0 40px #7be0e650
+}
+
+/* ===== FAIRNESS PANEL ===== */
+
+.fairBox{
+ font-size:10px;
+ color:var(--muted);
+ padding:8px;
+ word-break:break-all;
+ border-radius:10px;
+ background:rgba(0,0,0,.2);
+ margin-top:8px
+}
+
+.fairBox b{color:var(--gold)}
+
+/* ===== STREAK / CONFETTI ===== */
+
+.streakToast{
+ position:fixed;
+ left:50%;
+ top:85px;
+ transform:translateX(-50%);
+ z-index:600;
+ padding:14px 22px;
+ border-radius:16px;
+ background:linear-gradient(135deg,#2d1f08,#1a1206);
+ border:1px solid #d7b45c;
+ box-shadow:0 15px 50px #000;
+ text-align:center
+}
+
+#confettiCanvas{
+ position:fixed;
+ inset:0;
+ z-index:900;
+ pointer-events:none
+}
+
+.volumeRow{
+ display:flex;
+ align-items:center;
+ gap:8px
+}
+
+.volumeRow input[type="range"]{
+ width:90px
+}
+
+.lockedSwatch{
+ position:relative;
+ opacity:.45
+}
+
+.lockedSwatch:after{
+ content:"🔒";
+ position:absolute;
+ inset:0;
+ display:grid;
+ place-items:center;
+ font-size:14px
+}
+
+.exclusionOptions{
+ display:flex;
+ flex-wrap:wrap;
+ gap:8px;
+ margin:10px 0
+}
+
 @media(max-width:850px){
  .grid{
   grid-template-columns:1fr
@@ -4718,6 +6574,161 @@ button{cursor:pointer}
   min-height:570px
  }
 }
+
+/* ===== GAME MODE TABS ===== */
+.modeTabs{
+ display:flex;
+ gap:8px;
+ margin-bottom:16px
+}
+.modeTabs button{
+ flex:1;
+ padding:12px;
+ border-radius:14px;
+ border:1px solid rgba(255,255,255,.12);
+ background:#10231d;
+ color:white;
+ font-weight:900
+}
+.modeTabs button.active{
+ background:linear-gradient(135deg,#e8c76e,#a87523);
+ color:#171006
+}
+
+/* ===== DOMINO ===== */
+#dominoGame{min-height:100vh;padding:10px 12px 20px}
+.dominoBoardWrap{
+ width:min(1100px,94vw);
+ min-height:420px;
+ border-radius:28px;
+ padding:24px;
+ background:linear-gradient(135deg,#0b1c16,#061109);
+ box-shadow:0 30px 90px #000,inset 0 0 0 3px #234036;
+ position:relative
+}
+.dominoSeats{
+ display:flex;
+ justify-content:space-between;
+ margin-bottom:14px;
+ flex-wrap:wrap;
+ gap:10px
+}
+.dominoSeat{
+ display:flex;
+ align-items:center;
+ gap:8px;
+ padding:6px 10px;
+ border-radius:12px;
+ background:rgba(255,255,255,.05)
+}
+.dominoSeat.active{
+ background:rgba(229,189,97,.18);
+ box-shadow:0 0 14px rgba(229,189,97,.4)
+}
+.dominoSeat .avatar{width:38px;height:38px;font-size:18px}
+.dominoChainScroll{
+ overflow-x:auto;
+ padding:16px 4px;
+ display:flex;
+ align-items:center;
+ min-height:120px
+}
+.dominoChain{
+ display:flex;
+ align-items:center;
+ gap:2px;
+ margin:0 auto
+}
+.dTile{
+ display:flex;
+ background:linear-gradient(145deg,#fdfaf2,#e9e3d3);
+ border:1px solid #fff;
+ border-radius:8px;
+ box-shadow:0 6px 14px #0007;
+ flex:none
+}
+.dTile.horizontal{width:64px;height:32px}
+.dTile.half{
+ flex:1;
+ position:relative;
+ border-right:1px solid #9a9282
+}
+.dTile.half:last-child{border-right:0}
+.dTile .dot{
+ position:absolute;
+ width:5px;
+ height:5px;
+ border-radius:50%;
+ background:#1a1a1a
+}
+.dEndZone{
+ flex:none;
+ width:50px;
+ height:60px;
+ border-radius:10px;
+ border:2px dashed rgba(255,255,255,.25);
+ display:grid;
+ place-items:center;
+ color:var(--muted);
+ font-size:11px;
+ cursor:pointer
+}
+.dEndZone.highlight{
+ border-color:var(--gold);
+ background:rgba(229,189,97,.12);
+ color:var(--gold);
+ animation:pulse 1s infinite alternate
+}
+.dominoHand{
+ display:flex;
+ justify-content:center;
+ flex-wrap:wrap;
+ gap:8px;
+ margin-top:20px
+}
+.dTile.vertical{
+ width:52px;
+ height:96px;
+ flex-direction:column;
+ cursor:pointer;
+ transition:.2s transform
+}
+.dTile.vertical.half{border-right:0;border-bottom:1px solid #9a9282}
+.dTile.vertical.half:last-child{border-bottom:0}
+.dTile.vertical:hover{transform:translateY(-8px)}
+.dTile.vertical.selected{
+ transform:translateY(-14px);
+ box-shadow:0 0 0 3px #e7bd54,0 0 24px #ffd86b
+}
+.dominoHud{
+ display:flex;
+ justify-content:center;
+ gap:8px;
+ flex-wrap:wrap;
+ margin-bottom:14px
+}
+.dominoStatus{
+ text-align:center;
+ margin-top:10px;
+ font-size:13px;
+ color:var(--muted)
+}
+.dominoScorePanel{
+ width:min(1100px,94vw);
+ margin:14px auto 0;
+ display:flex;
+ gap:10px;
+ flex-wrap:wrap;
+ justify-content:center
+}
+.dominoScoreCard{
+ padding:10px 16px;
+ border-radius:14px;
+ background:rgba(255,255,255,.06);
+ text-align:center;
+ min-width:110px
+}
+.dominoScoreCard b{display:block;font-size:20px;color:var(--gold)}
 </style>
 </head>
 
@@ -4834,18 +6845,67 @@ button{cursor:pointer}
       LVL 1
      </span>
 
+     <span
+      id="profileRank"
+      class="rankPill">
+      🥉 Bronze
+     </span>
+
      <small id="profileXp">
       0 XP
+     </small>
+
+     <small id="profileCoins">
+      🪙 0
      </small>
     </div>
    </div>
 
   </div>
+
+  <div class="topBar">
+
+   <button id="leaderboardBtn">
+    🏆 რეიტინგი
+   </button>
+
+   <button id="friendsBtn">
+    👥 მეგობრები
+   </button>
+
+   <button id="statsBtn">
+    📊 სტატისტიკა
+   </button>
+
+   <button id="shopBtn">
+    🛍️ მაღაზია
+   </button>
+
+   <button id="infoBtn">
+    ℹ️ ინფო
+   </button>
+
+   <select
+    id="langSelect"
+    class="langSelect">
+    <option value="ka">🇬🇪 ქართული</option>
+    <option value="en">🇬🇧 English</option>
+    <option value="ru">🇷🇺 Русский</option>
+   </select>
+
+  </div>
+ </div>
+
+ <div class="modeTabs">
+  <button id="modeBuraTab" class="active">🎴 ბურა</button>
+  <button id="modeDominoTab">🁫 დომინო</button>
  </div>
 
  <div class="grid">
 
   <div>
+
+   <div id="buraLobbyPanels">
 
    <div class="panel glass">
 
@@ -4906,6 +6966,50 @@ button{cursor:pointer}
     <h2>🟢 აქტიური მაგიდები</h2>
 
     <div id="tables"></div>
+
+   </div>
+
+   </div>
+
+   <div id="dominoLobbyPanels" class="hidden">
+
+    <div class="panel glass">
+
+     <h2>🁫 ახალი დომინოს მაგიდა</h2>
+
+     <input
+      id="dominoTableName"
+      class="field"
+      value="Domino Table"
+      placeholder="მაგიდის სახელი">
+
+     <div style="display:flex;gap:8px;margin:12px 0">
+
+      <select id="dominoCapacity" class="field">
+       <option value="2">2 მოთამაშე</option>
+       <option value="3">3 მოთამაშე</option>
+       <option value="4" selected>4 მოთამაშე</option>
+      </select>
+
+      <select id="dominoRounds" class="field">
+       <option value="1" selected>1 რაუნდი</option>
+       <option value="2">2 რაუნდი</option>
+       <option value="3">3 რაუნდი</option>
+       <option value="4">4 რაუნდი</option>
+      </select>
+
+     </div>
+
+     <button id="dominoCreateBtn" class="primary">
+      შექმენი / შედი მაგიდაზე
+     </button>
+
+    </div>
+
+    <div class="panel glass" style="margin-top:15px">
+     <h2>🟢 აქტიური დომინოს მაგიდები</h2>
+     <div id="dominoTables"></div>
+    </div>
 
    </div>
 
@@ -4985,6 +7089,15 @@ button{cursor:pointer}
    class="smallBtn">
    🔊
   </button>
+
+  <div class="volumeRow smallBtn">
+   <input
+    id="volumeSlider"
+    type="range"
+    min="0"
+    max="100"
+    value="100">
+  </div>
 
  </div>
 
@@ -5085,6 +7198,35 @@ button{cursor:pointer}
  </div>
 </section>
 
+<section id="dominoGame" class="hidden">
+
+ <div class="dominoHud">
+  <div class="pill">🁫 რაუნდი <b id="dHudRound">1</b>/<b id="dHudTotalRounds">1</b></div>
+  <div class="pill">🪨 ბანკი <b id="dHudBoneyard">0</b></div>
+ </div>
+
+ <div class="arena">
+  <div>
+
+   <div class="dominoBoardWrap">
+    <div id="dominoSeats" class="dominoSeats"></div>
+
+    <div class="dominoChainScroll">
+     <div id="dominoChain" class="dominoChain"></div>
+    </div>
+
+    <div id="dominoStatus" class="dominoStatus">...</div>
+
+    <div id="dominoHand" class="dominoHand"></div>
+   </div>
+
+   <div id="dominoScorePanel" class="dominoScorePanel"></div>
+
+  </div>
+ </div>
+
+</section>
+
 <div
  id="giftMenu"
  class="giftMenu hidden">
@@ -5158,6 +7300,38 @@ button{cursor:pointer}
   title="შავი / Obsidian">
  </button>
 
+ <button
+  class="feltSwatch lockedSwatch"
+  data-felt="sunset"
+  data-shop="felt_sunset"
+  style="background:linear-gradient(135deg,#ff8a3d,#c2185b)"
+  title="მზის ჩასვლა (მაღაზია)">
+ </button>
+
+ <button
+  class="feltSwatch lockedSwatch"
+  data-felt="neon"
+  data-shop="felt_neon"
+  style="background:linear-gradient(135deg,#00e5ff,#ff00e5)"
+  title="ნეონი (მაღაზია)">
+ </button>
+
+ <button
+  class="feltSwatch lockedSwatch"
+  data-felt="galaxy"
+  data-shop="felt_galaxy"
+  style="background:linear-gradient(135deg,#1a0b3d,#3d1a6b,#0b0b2e)"
+  title="გალაქტიკა (მაღაზია)">
+ </button>
+
+ <button
+  class="feltSwatch lockedSwatch"
+  data-felt="rosegold"
+  data-shop="felt_rosegold"
+  style="background:linear-gradient(135deg,#f7c9c0,#b76e79)"
+  title="ვარდისფერი ოქრო (მაღაზია)">
+ </button>
+
 </div>
 
 <div
@@ -5225,6 +7399,161 @@ button{cursor:pointer}
  </div>
 </div>
 
+<div
+ id="leaderboardModal"
+ class="modal hidden">
+
+ <div class="modalBox">
+
+  <button
+   class="smallBtn closeModal"
+   data-modal="leaderboardModal"
+   style="float:right">
+   ✕
+  </button>
+
+  <h2>🏆 გლობალური რეიტინგი</h2>
+
+  <div id="leaderboardList"></div>
+
+ </div>
+</div>
+
+<div
+ id="friendsModal"
+ class="modal hidden">
+
+ <div class="modalBox">
+
+  <button
+   class="smallBtn closeModal"
+   data-modal="friendsModal"
+   style="float:right">
+   ✕
+  </button>
+
+  <h2>👥 მეგობრები</h2>
+
+  <div class="friendAdd">
+   <input
+    id="friendUsername"
+    class="field"
+    placeholder="Username">
+
+   <button
+    id="addFriendBtn"
+    class="primary">
+    დამატება
+   </button>
+  </div>
+
+  <div id="friendsList"></div>
+
+ </div>
+</div>
+
+<div
+ id="statsModal"
+ class="modal hidden">
+
+ <div class="modalBox">
+
+  <button
+   class="smallBtn closeModal"
+   data-modal="statsModal"
+   style="float:right">
+   ✕
+  </button>
+
+  <h2>📊 სტატისტიკა</h2>
+
+  <div id="statGrid" class="statGrid"></div>
+
+  <h3 style="margin-top:18px">ბოლო პარტიები</h3>
+
+  <div id="sparkRow" class="sparkRow"></div>
+
+  <div id="fairnessLog" class="fairBox"></div>
+
+ </div>
+</div>
+
+<div
+ id="shopModal"
+ class="modal hidden">
+
+ <div class="modalBox">
+
+  <button
+   class="smallBtn closeModal"
+   data-modal="shopModal"
+   style="float:right">
+   ✕
+  </button>
+
+  <h2>🛍️ მაღაზია</h2>
+
+  <p style="color:#9eb1aa">
+   მხოლოდ კოსმეტიკური ნივთები · მონეტები არ იყიდება რეალურ ფულში
+  </p>
+
+  <div id="shopGrid" class="shopGrid"></div>
+
+ </div>
+</div>
+
+<div
+ id="infoModal"
+ class="modal hidden">
+
+ <div class="modalBox">
+
+  <button
+   class="smallBtn closeModal"
+   data-modal="infoModal"
+   style="float:right">
+   ✕
+  </button>
+
+  <h2>ℹ️ წესები, კონფიდენციალურობა და პასუხისმგებლიანი თამაში</h2>
+
+  <div class="rule">
+   <b>18+</b><br>
+   ეს პლატფორმა განკუთვნილია მხოლოდ 18 წლის და უფროსი ასაკის მომხმარებლებისთვის.
+   ბალანსი ვირტუალურია და არ გაიცვლება რეალურ ფულში.
+  </div>
+
+  <div class="rule">
+   <b>წესები და პირობები</b><br>
+   რეგისტრაციით თანხმდები, რომ თამაშობ სამართლიანად, არ იყენებ ბოტებს/ავტომატიზაციას
+   და პატივს სცემ სხვა მოთამაშეებს.
+  </div>
+
+  <div class="rule">
+   <b>კონფიდენციალურობა</b><br>
+   ვინახავთ მხოლოდ საჭირო მონაცემებს (username, პროფილის სტატისტიკა).
+   პაროლები ინახება დაჰეშილი სახით და არასდროს ჩანს ღიად.
+  </div>
+
+  <div class="rule">
+   <b>🛡 პასუხისმგებლიანი თამაში</b><br>
+   თუ გრძნობ, რომ თამაში მეტისმეტ დროს/ყურადღებას გართმევს, გამოიყენე
+   პაუზის ვარიანტები ქვემოთ. ეს დაუყოვნებლივ დაბლოკავს შენს შესვლას
+   არჩეული პერიოდით.
+
+   <div class="exclusionOptions">
+    <button class="smallBtn selfExcludeBtn" data-duration="24h">⏸ 24 საათი</button>
+    <button class="smallBtn selfExcludeBtn" data-duration="7d">⏸ 7 დღე</button>
+    <button class="smallBtn selfExcludeBtn" data-duration="30d">⏸ 30 დღე</button>
+    <button class="smallBtn selfExcludeBtn" data-duration="forever">⛔ სამუდამოდ</button>
+   </div>
+  </div>
+
+ </div>
+</div>
+
+<canvas id="confettiCanvas" class="hidden"></canvas>
+
 <script src="/socket.io/socket.io.js"></script>
 
 <script>
@@ -5246,7 +7575,11 @@ var stake = 5;
 var giftTarget = null;
 
 var muted = false;
+var volume = 1;
 var audio = null;
+
+var pendingInvite = null;
+var currentLang = 'ka';
 
 var touchStart = {};
 
@@ -5356,10 +7689,13 @@ function tone(
  freq,
  duration,
  type,
- volume,
+ vol,
  delay
 ) {
- if (muted) {
+ if (
+  muted ||
+  volume <= 0
+ ) {
   return;
  }
 
@@ -5390,7 +7726,7 @@ function tone(
 
  gain.gain
   .setValueAtTime(
-   volume || .04,
+   (vol || .04) * volume,
    time
   );
 
@@ -5483,7 +7819,10 @@ function sfx(type) {
 }
 
 function speak(text) {
- if (muted) {
+ if (
+  muted ||
+  volume <= 0
+ ) {
   return;
  }
 
@@ -5496,6 +7835,9 @@ function speak(text) {
     new SpeechSynthesisUtterance(
      text
     );
+
+   utterance.volume =
+    volume;
 
    utterance.lang =
     'ka-GE';
@@ -5721,6 +8063,26 @@ socket.on(
   show('lobby');
 
   renderProfile();
+
+  if (
+   data.streakBonus &&
+   data.streakBonus > 0
+  ) {
+   streakToast(
+    data.loginStreak,
+    data.streakBonus
+   );
+  }
+
+  if (pendingInvite) {
+   var invite = pendingInvite;
+   pendingInvite = null;
+
+   socket.emit(
+    'joinTable',
+    { roomId:invite }
+   );
+  }
  }
 );
 
@@ -5755,6 +8117,17 @@ socket.on(
    PROFILE
    ============================================================ */
 
+function frameClass(value) {
+ if (
+  !value ||
+  value === 'none'
+ ) {
+  return '';
+ }
+
+ return 'frame-' + value;
+}
+
 function renderProfile() {
  if (!profile) {
   return;
@@ -5769,17 +8142,58 @@ function renderProfile() {
   profile.avatar
  );
 
+ el('profileAvatar')
+  .className =
+   'profileAvatar ' +
+   frameClass(
+    profile.equipped &&
+    profile.equipped.frame
+   );
+
  el('profileLevel')
   .textContent =
    'LVL ' +
    profile.level;
+
+ if (profile.rank) {
+  el('profileRank')
+   .textContent =
+    profile.rank.icon +
+    ' ' +
+    profile.rank.name +
+    ' (' +
+    profile.rating +
+    ')';
+ }
 
  el('profileXp')
   .textContent =
    profile.xp +
    ' XP';
 
+ el('profileCoins')
+  .textContent =
+   '🪙 ' +
+   (profile.coins || 0);
+
  renderQuests();
+
+ if (
+  typeof refreshFeltLocks ===
+  'function'
+ ) {
+  refreshFeltLocks();
+ }
+
+ if (
+  profile.equipped &&
+  profile.equipped.felt &&
+  typeof applyFelt === 'function'
+ ) {
+  applyFelt(
+   profile.equipped.felt
+  );
+ }
 }
 
 socket.on(
@@ -5791,6 +8205,35 @@ socket.on(
   renderProfile();
  }
 );
+
+function streakToast(streak, bonus) {
+ var node =
+  document.createElement(
+   'div'
+  );
+
+ node.className =
+  'streakToast';
+
+ node.innerHTML =
+  '🔥 <b>' +
+  streak +
+  ' დღიანი სერია!</b><br>' +
+  '+' +
+  bonus +
+  ' 🪙 მონეტა';
+
+ document.body.appendChild(
+  node
+ );
+
+ setTimeout(
+  function () {
+   node.remove();
+  },
+  3500
+ );
+}
 
 function renderQuests() {
  if (!profile) {
@@ -6140,6 +8583,7 @@ socket.on(
 
   hide('auth');
   hide('lobby');
+  hide('dominoGame');
   show('game');
 
   render();
@@ -6305,7 +8749,10 @@ function renderSeats() {
     );
 
    avatar.className =
-    'avatar';
+    'avatar ' +
+    frameClass(
+     player.frame
+    );
 
    setAvatar(
     avatar,
@@ -7048,6 +9495,45 @@ el('muteBtn').onclick =
     : '🔊';
  };
 
+el('volumeSlider').oninput =
+ function () {
+  volume =
+   Number(this.value) / 100;
+
+  muted =
+   volume <= 0;
+
+  el('muteBtn')
+   .textContent =
+    muted
+     ? '🔇'
+     : '🔊';
+
+  try {
+   localStorage.setItem(
+    'buraVolume',
+    this.value
+   );
+  } catch (error) {}
+ };
+
+try {
+ var savedVolume =
+  localStorage.getItem(
+   'buraVolume'
+  );
+
+ if (savedVolume !== null) {
+  el('volumeSlider').value =
+   savedVolume;
+
+  volume =
+   Number(savedVolume) / 100;
+
+  muted = volume <= 0;
+ }
+} catch (error) {}
+
 /* ============================================================
    FELT PICKER
    ============================================================ */
@@ -7110,6 +9596,39 @@ el('feltBtn').onclick =
   }
  };
 
+function refreshFeltLocks() {
+ if (!profile) {
+  return;
+ }
+
+ var owned =
+  (profile.inventory &&
+   profile.inventory.felts) ||
+  [];
+
+ document
+  .querySelectorAll(
+   '.feltSwatch'
+  )
+  .forEach(
+   function (button) {
+    var isFree =
+     !button.dataset.shop;
+
+    var isOwned =
+     isFree ||
+     owned.indexOf(
+      button.dataset.felt
+     ) >= 0;
+
+    button.classList.toggle(
+     'lockedSwatch',
+     !isOwned
+    );
+   }
+  );
+}
+
 document
  .querySelectorAll(
   '.feltSwatch'
@@ -7121,6 +9640,25 @@ document
      var value =
       button.dataset.felt;
 
+     var owned =
+      !profile ||
+      !button.classList.contains(
+       'lockedSwatch'
+      );
+
+     if (!owned) {
+      hide('feltMenu');
+
+      toast(
+       '🔒 ეს ფერი მაღაზიაშია — გახსენი 🛍️ მაღაზია'
+      );
+
+      renderShop();
+      openModal('shopModal');
+
+      return;
+     }
+
      applyFelt(value);
 
      try {
@@ -7129,6 +9667,16 @@ document
        value
       );
      } catch (error) {}
+
+     if (profile) {
+      socket.emit(
+       'equipCosmetic',
+       {
+        slot:'felt',
+        value:value
+       }
+      );
+     }
 
      hide('feltMenu');
     };
@@ -7550,6 +10098,7 @@ socket.on(
     current.viewerId
   ) {
    sfx('win');
+   confettiBurst();
   } else {
    sfx('lose');
   }
@@ -7642,8 +10191,1071 @@ setInterval(
 );
 
 /* ============================================================
-   RESTORE SESSION
+   MODALS (generic open/close)
    ============================================================ */
+
+function openModal(id) {
+ show(id);
+}
+
+document
+ .querySelectorAll(
+  '.closeModal'
+ )
+ .forEach(
+  function (button) {
+   button.onclick =
+    function () {
+     hide(
+      button.dataset.modal
+     );
+    };
+  }
+ );
+
+document
+ .querySelectorAll(
+  '.modal'
+ )
+ .forEach(
+  function (modal) {
+   modal.addEventListener(
+    'click',
+    function (event) {
+     if (event.target === modal) {
+      modal.classList.add(
+       'hidden'
+      );
+     }
+    }
+   );
+  }
+ );
+
+/* ============================================================
+   LEADERBOARD
+   ============================================================ */
+
+el('leaderboardBtn').onclick =
+ function () {
+  socket.emit(
+   'getLeaderboard'
+  );
+
+  openModal(
+   'leaderboardModal'
+  );
+ };
+
+socket.on(
+ 'leaderboardData',
+ function (list) {
+  el('leaderboardList').innerHTML =
+   list.map(
+    function (player, index) {
+     return (
+      '<div class="lbRow">' +
+       '<span class="lbRank">' +
+        (index + 1) +
+       '</span>' +
+       '<span class="lbWho">' +
+        '<span class="onlineDot' +
+         (
+          player.online
+           ? ' on'
+           : ''
+         ) +
+         '"></span>' +
+        setAvatarHtml(
+         player.avatar
+        ) +
+        '<span>' +
+         esc(player.username) +
+        '</span>' +
+       '</span>' +
+       '<span class="rankPill">' +
+        player.rank.icon +
+        ' ' +
+        player.rating +
+       '</span>' +
+      '</div>'
+     );
+    }
+   ).join('') ||
+   '<p style="color:#91a49d">' +
+   'ჯერ არავინაა რეიტინგში.' +
+   '</p>';
+ }
+);
+
+function setAvatarHtml(value) {
+ if (
+  String(value || '')
+   .indexOf('data:image/') === 0
+ ) {
+  return (
+   '<img src="' +
+   value +
+   '" style="width:22px;height:22px;' +
+   'border-radius:50%;object-fit:cover">'
+  );
+ }
+
+ return (
+  '<span>' +
+  esc(value || '🦊') +
+  '</span>'
+ );
+}
+
+/* ============================================================
+   FRIENDS
+   ============================================================ */
+
+el('friendsBtn').onclick =
+ function () {
+  socket.emit(
+   'getFriends'
+  );
+
+  openModal(
+   'friendsModal'
+  );
+ };
+
+el('addFriendBtn').onclick =
+ function () {
+  var value =
+   el('friendUsername')
+    .value
+    .trim();
+
+  if (!value) {
+   return;
+  }
+
+  socket.emit(
+   'addFriend',
+   { username:value }
+  );
+
+  el('friendUsername')
+   .value = '';
+ };
+
+socket.on(
+ 'friendsList',
+ function (list) {
+  if (!list.length) {
+   el('friendsList').innerHTML =
+    '<p style="color:#91a49d">' +
+    'ჯერ არცერთი მეგობარი არ გყავს.' +
+    '</p>';
+
+   return;
+  }
+
+  el('friendsList').innerHTML =
+   list.map(
+    function (friend) {
+     return (
+      '<div class="friendRow">' +
+       '<span class="friendWho">' +
+        '<span class="onlineDot' +
+         (
+          friend.online
+           ? ' on'
+           : ''
+         ) +
+         '"></span>' +
+        setAvatarHtml(
+         friend.avatar
+        ) +
+        '<span>' +
+         esc(friend.username) +
+        '</span>' +
+       '</span>' +
+       '<span class="rankPill">' +
+        friend.rank.icon +
+        ' ' +
+        friend.rating +
+       '</span>' +
+       '<button ' +
+        'class="smallBtn removeFriendBtn" ' +
+        'data-id="' +
+        esc(friend.id) +
+        '">✕</button>' +
+      '</div>'
+     );
+    }
+   ).join('');
+
+  document
+   .querySelectorAll(
+    '.removeFriendBtn'
+   )
+   .forEach(
+    function (button) {
+     button.onclick =
+      function () {
+       socket.emit(
+        'removeFriend',
+        { id:button.dataset.id }
+       );
+      };
+    }
+   );
+ }
+);
+
+/* ============================================================
+   STATS
+   ============================================================ */
+
+el('statsBtn').onclick =
+ function () {
+  renderStats();
+
+  openModal(
+   'statsModal'
+  );
+ };
+
+function renderStats() {
+ if (!profile) {
+  return;
+ }
+
+ var stats =
+  profile.stats || {};
+
+ var partyRate =
+  stats.partiesPlayed
+   ? Math.round(
+      (
+       stats.partiesWon /
+       stats.partiesPlayed
+      ) * 100
+     )
+   : 0;
+
+ el('statGrid').innerHTML =
+  [
+   ['პარტიები მოგებული', stats.partiesWon || 0],
+   ['პარტიები ნათამაშები', stats.partiesPlayed || 0],
+   ['მოგების % ', partyRate + '%'],
+   ['საუკეთესო სერია', stats.bestWinStreak || 0],
+   ['დიდი მოგება', stats.biggestWin || 0],
+   ['ხელები ნათამაშები', stats.handsPlayed || 0]
+  ].map(
+   function (row) {
+    return (
+     '<div class="statBox">' +
+      '<b>' +
+       row[1] +
+      '</b>' +
+      '<small>' +
+       row[0] +
+      '</small>' +
+     '</div>'
+    );
+   }
+  ).join('');
+
+ var recent =
+  stats.recentParties || [];
+
+ el('sparkRow').innerHTML =
+  recent.map(
+   function (party) {
+    var height =
+     Math.min(
+      100,
+      10 +
+      Math.abs(party.delta || 1)
+     );
+
+    return (
+     '<div class="sparkBar ' +
+      (
+       party.won
+        ? 'win'
+        : 'loss'
+      ) +
+      '" style="height:' +
+      height +
+      '%" title="' +
+      (
+       party.won
+        ? 'მოგება'
+        : 'წაგება'
+      ) +
+      ' (' +
+      party.delta +
+      ')"></div>'
+    );
+   }
+  ).join('') ||
+  '<p style="color:#91a49d;font-size:12px">' +
+  'ჯერ არცერთი პარტია არ დასრულებულა.' +
+  '</p>';
+}
+
+var fairnessHistory = [];
+
+socket.on(
+ 'fairnessReveal',
+ function (data) {
+  fairnessHistory.unshift(
+   data
+  );
+
+  fairnessHistory =
+   fairnessHistory.slice(0, 10);
+
+  el('fairnessLog').innerHTML =
+   '<b>🔒 Provably Fair</b><br>' +
+   fairnessHistory.map(
+    function (entry) {
+     return (
+      'ხელი #' +
+      entry.hand +
+      ' · seed: ' +
+      entry.seed.slice(0, 16) +
+      '… · hash: ' +
+      entry.hash.slice(0, 16) +
+      '…'
+     );
+    }
+   ).join('<br>');
+ }
+);
+
+/* ============================================================
+   SHOP
+   ============================================================ */
+
+var SHOP_CATALOG = [
+ { id:'felt_sunset', type:'felt', key:'sunset', name:'მზის ჩასვლა', price:300, swatch:'linear-gradient(135deg,#ff8a3d,#c2185b)' },
+ { id:'felt_neon', type:'felt', key:'neon', name:'ნეონი', price:300, swatch:'linear-gradient(135deg,#00e5ff,#ff00e5)' },
+ { id:'felt_galaxy', type:'felt', key:'galaxy', name:'გალაქტიკა', price:500, swatch:'linear-gradient(135deg,#1a0b3d,#3d1a6b,#0b0b2e)' },
+ { id:'felt_rosegold', type:'felt', key:'rosegold', name:'ვარდისფერი ოქრო', price:500, swatch:'linear-gradient(135deg,#f7c9c0,#b76e79)' },
+ { id:'frame_bronze', type:'frame', key:'bronze', name:'ბრინჯაოს ჩარჩო', price:150, swatch:'linear-gradient(135deg,#c98a4b,#7a4d24)' },
+ { id:'frame_silver', type:'frame', key:'silver', name:'ვერცხლის ჩარჩო', price:250, swatch:'linear-gradient(135deg,#e6e6f0,#a0a0ad)' },
+ { id:'frame_gold', type:'frame', key:'gold', name:'ოქროს ჩარჩო', price:400, swatch:'linear-gradient(135deg,#ffe27a,#c9970f)' },
+ { id:'frame_diamond', type:'frame', key:'diamond', name:'ბრილიანტის ჩარჩო', price:700, swatch:'linear-gradient(135deg,#b6f3f7,#4fc3cf)' }
+];
+
+el('shopBtn').onclick =
+ function () {
+  renderShop();
+
+  openModal(
+   'shopModal'
+  );
+ };
+
+function renderShop() {
+ if (!profile) {
+  return;
+ }
+
+ var inv =
+  profile.inventory ||
+  { felts:[], frames:[] };
+
+ el('shopGrid').innerHTML =
+  SHOP_CATALOG.map(
+   function (item) {
+    var owned =
+     (
+      item.type === 'felt'
+       ? inv.felts
+       : inv.frames
+     ).indexOf(item.key) >= 0;
+
+    var equipped =
+     profile.equipped &&
+     profile.equipped[item.type] ===
+      item.key;
+
+    var btnLabel =
+     equipped
+      ? '✓ გააქტიურებულია'
+      : (
+        owned
+         ? 'გააქტიურება'
+         : '🪙 ' + item.price
+       );
+
+    var btnClass =
+     equipped
+      ? 'owned'
+      : (
+        owned
+         ? ''
+         : (
+           profile.coins < item.price
+            ? 'locked'
+            : ''
+          )
+       );
+
+    return (
+     '<div class="shopItem">' +
+      '<div class="shopSwatch" ' +
+       'style="background:' +
+       item.swatch +
+       '"></div>' +
+      '<b>' +
+       esc(item.name) +
+      '</b>' +
+      '<button ' +
+       'class="shopBtn ' +
+       btnClass +
+       ' shopAction" ' +
+       'data-id="' +
+       item.id +
+       '" ' +
+       'data-owned="' +
+       owned +
+       '" ' +
+       (
+        equipped
+         ? 'disabled'
+         : ''
+       ) +
+       '>' +
+       btnLabel +
+      '</button>' +
+     '</div>'
+    );
+   }
+  ).join('');
+
+ document
+  .querySelectorAll(
+   '.shopAction'
+  )
+  .forEach(
+   function (button) {
+    button.onclick =
+     function () {
+      var item =
+       SHOP_CATALOG.find(
+        function (candidate) {
+         return (
+          candidate.id ===
+          button.dataset.id
+         );
+        }
+       );
+
+      if (!item) {
+       return;
+      }
+
+      if (
+       button.dataset.owned ===
+       'true'
+      ) {
+       socket.emit(
+        'equipCosmetic',
+        {
+         slot:item.type,
+         value:item.key
+        }
+       );
+      } else {
+       socket.emit(
+        'buyItem',
+        { itemId:item.id }
+       );
+      }
+     };
+   }
+  );
+}
+
+socket.on(
+ 'purchaseSuccess',
+ function () {
+  toast(
+   '🛍️ ნივთი შეძენილია!'
+  );
+
+  renderShop();
+ }
+);
+
+/* ============================================================
+   SELF-EXCLUSION
+   ============================================================ */
+
+document
+ .querySelectorAll(
+  '.selfExcludeBtn'
+ )
+ .forEach(
+  function (button) {
+   button.onclick =
+    function () {
+     var duration =
+      button.dataset.duration;
+
+     var label =
+      {
+       '24h':'24 საათით',
+       '7d':'7 დღით',
+       '30d':'30 დღით',
+       forever:'სამუდამოდ'
+      }[duration];
+
+     if (
+      !confirm(
+       'დარწმუნებული ხარ, რომ გინდა ანგარიშის ' +
+       'დაბლოკვა ' +
+       label +
+       '? ეს დაუყოვნებლივ ამოგკეტავს სისტემიდან.'
+      )
+     ) {
+      return;
+     }
+
+     socket.emit(
+      'selfExclude',
+      { duration:duration }
+     );
+    };
+  }
+ );
+
+socket.on(
+ 'selfExcluded',
+ function () {
+  toast(
+   '⏸ ანგარიში დაბლოკილია. ჯანმრთელობა პირველ ადგილზეა.'
+  );
+
+  setTimeout(
+   function () {
+    localStorage.removeItem(
+     'buraToken'
+    );
+
+    location.reload();
+   },
+   2500
+  );
+ }
+);
+
+/* ============================================================
+   CONFETTI
+   ============================================================ */
+
+function confettiBurst() {
+ var canvas =
+  el('confettiCanvas');
+
+ canvas.width =
+  window.innerWidth;
+
+ canvas.height =
+  window.innerHeight;
+
+ canvas.classList.remove(
+  'hidden'
+ );
+
+ var ctx =
+  canvas.getContext('2d');
+
+ var colors =
+  ['#e5bd61','#49d69a','#e0616f','#7be0e6','#ffd75e'];
+
+ var pieces = [];
+
+ for (
+  var i = 0;
+  i < 140;
+  i++
+ ) {
+  pieces.push({
+   x:Math.random() * canvas.width,
+   y:-20 - Math.random() * canvas.height * .5,
+   w:6 + Math.random() * 6,
+   h:8 + Math.random() * 10,
+   speed:2 + Math.random() * 4,
+   drift:(Math.random() - .5) * 2,
+   rotate:Math.random() * 360,
+   spin:(Math.random() - .5) * 12,
+   color:colors[
+    Math.floor(
+     Math.random() * colors.length
+    )
+   ]
+  });
+ }
+
+ var start = Date.now();
+
+ function frame() {
+  var elapsed = Date.now() - start;
+
+  ctx.clearRect(
+   0, 0,
+   canvas.width,
+   canvas.height
+  );
+
+  pieces.forEach(
+   function (piece) {
+    piece.y += piece.speed;
+    piece.x += piece.drift;
+    piece.rotate += piece.spin;
+
+    ctx.save();
+
+    ctx.translate(
+     piece.x,
+     piece.y
+    );
+
+    ctx.rotate(
+     (piece.rotate * Math.PI) / 180
+    );
+
+    ctx.fillStyle =
+     piece.color;
+
+    ctx.fillRect(
+     -piece.w / 2,
+     -piece.h / 2,
+     piece.w,
+     piece.h
+    );
+
+    ctx.restore();
+   }
+  );
+
+  if (elapsed < 3200) {
+   requestAnimationFrame(frame);
+  } else {
+   canvas.classList.add(
+    'hidden'
+   );
+
+   ctx.clearRect(
+    0, 0,
+    canvas.width,
+    canvas.height
+   );
+  }
+ }
+
+ requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   LANGUAGE (i18n)
+   ============================================================ */
+
+var I18N = {
+ ka:{
+  loginTab:'შესვლა',
+  registerTab:'რეგისტრაცია',
+  newTable:'🎴 ახალი მაგიდა',
+  activeTables:'🟢 აქტიური მაგიდები',
+  quests:'🎯 დღიური დავალებები',
+  tournaments:'🏆 ტურნირები',
+  createBtn:'შექმენი / შედი მაგიდაზე'
+ },
+ en:{
+  loginTab:'Login',
+  registerTab:'Register',
+  newTable:'🎴 New Table',
+  activeTables:'🟢 Active Tables',
+  quests:'🎯 Daily Quests',
+  tournaments:'🏆 Tournaments',
+  createBtn:'Create / Join Table'
+ },
+ ru:{
+  loginTab:'Вход',
+  registerTab:'Регистрация',
+  newTable:'🎴 Новый стол',
+  activeTables:'🟢 Активные столы',
+  quests:'🎯 Ежедневные задания',
+  tournaments:'🏆 Турниры',
+  createBtn:'Создать / Войти'
+ }
+};
+
+function applyLanguage(lang) {
+ currentLang = lang;
+
+ var dict =
+  I18N[lang] ||
+  I18N.ka;
+
+ el('loginTab').firstChild &&
+  (
+   el('loginTab').textContent =
+    dict.loginTab
+  );
+
+ el('registerTab').textContent =
+  dict.registerTab;
+
+ el('createBtn').textContent =
+  dict.createBtn;
+
+ document
+  .querySelectorAll(
+   '.panel h2'
+  )
+  .forEach(
+   function (heading) {
+    if (
+     heading.textContent
+      .indexOf('ახალი მაგიდა') >= 0 ||
+     heading.textContent
+      .indexOf('New Table') >= 0 ||
+     heading.textContent
+      .indexOf('Новый стол') >= 0
+    ) {
+     heading.textContent =
+      dict.newTable;
+    } else if (
+     heading.textContent
+      .indexOf('აქტიური მაგიდები') >= 0 ||
+     heading.textContent
+      .indexOf('Active Tables') >= 0 ||
+     heading.textContent
+      .indexOf('Активные столы') >= 0
+    ) {
+     heading.textContent =
+      dict.activeTables;
+    } else if (
+     heading.textContent
+      .indexOf('დღიური დავალებები') >= 0 ||
+     heading.textContent
+      .indexOf('Daily Quests') >= 0 ||
+     heading.textContent
+      .indexOf('Ежедневные задания') >= 0
+    ) {
+     heading.textContent =
+      dict.quests;
+    } else if (
+     heading.textContent
+      .indexOf('ტურნირები') >= 0 ||
+     heading.textContent
+      .indexOf('Tournaments') >= 0 ||
+     heading.textContent
+      .indexOf('Турниры') >= 0
+    ) {
+     heading.textContent =
+      dict.tournaments;
+    }
+   }
+  );
+
+ try {
+  localStorage.setItem(
+   'buraLang',
+   lang
+  );
+ } catch (error) {}
+}
+
+el('langSelect').onchange =
+ function () {
+  applyLanguage(
+   this.value
+  );
+ };
+
+try {
+ var savedLang =
+  localStorage.getItem(
+   'buraLang'
+  );
+
+ if (savedLang) {
+  el('langSelect').value =
+   savedLang;
+
+  applyLanguage(savedLang);
+ }
+} catch (error) {}
+
+/* ============================================================
+   DOMINO — CLIENT
+   ============================================================ */
+
+var dominoCurrent = null;
+var dominoSelectedTile = null;
+
+var DOMINO_DOTS = {
+ 0: [],
+ 1: [[50,50]],
+ 2: [[25,25],[75,75]],
+ 3: [[25,25],[50,50],[75,75]],
+ 4: [[25,25],[75,25],[25,75],[75,75]],
+ 5: [[25,25],[75,25],[50,50],[25,75],[75,75]],
+ 6: [[25,20],[75,20],[25,50],[75,50],[25,80],[75,80]]
+};
+
+function dominoHalfHtml(value) {
+ var dots = DOMINO_DOTS[value] || [];
+ return dots.map(function (pos) {
+  return '<div class="dot" style="left:' + pos[0] + '%;top:' + pos[1] + '%;transform:translate(-50%,-50%)"></div>';
+ }).join('');
+}
+
+function dominoTileHtml(a, b, vertical) {
+ return (
+  '<div class="dTile ' + (vertical ? 'vertical' : 'horizontal') + '">' +
+   '<div class="dTile half">' + dominoHalfHtml(a) + '</div>' +
+   '<div class="dTile half">' + dominoHalfHtml(b) + '</div>' +
+  '</div>'
+ );
+}
+
+/* ----- mode tabs ----- */
+
+el('modeBuraTab').onclick = function () {
+ el('modeBuraTab').classList.add('active');
+ el('modeDominoTab').classList.remove('active');
+ show('buraLobbyPanels');
+ hide('dominoLobbyPanels');
+};
+
+el('modeDominoTab').onclick = function () {
+ el('modeDominoTab').classList.add('active');
+ el('modeBuraTab').classList.remove('active');
+ hide('buraLobbyPanels');
+ show('dominoLobbyPanels');
+};
+
+/* ----- create / join ----- */
+
+el('dominoCreateBtn').onclick = function () {
+ socket.emit('dominoJoinTable', {
+  tableName: el('dominoTableName').value,
+  capacity: Number(el('dominoCapacity').value),
+  rounds: Number(el('dominoRounds').value)
+ });
+};
+
+socket.on('dominoLobbyTables', function (list) {
+ if (!list.length) {
+  el('dominoTables').innerHTML = '<p style="color:#91a49d">ღია დომინოს მაგიდები ჯერ არ არის.</p>';
+  return;
+ }
+
+ el('dominoTables').innerHTML = list.map(function (table) {
+  return (
+   '<div class="tableRow">' +
+    '<div><b>' + esc(table.name) + '</b><br>' +
+    '<small>' + table.players + '/' + table.capacity + ' · ' + table.rounds + ' რაუნდი</small></div>' +
+    '<button class="primary joinDominoRoom" data-id="' + esc(table.id) + '">შეერთება</button>' +
+   '</div>'
+  );
+ }).join('');
+
+ document.querySelectorAll('.joinDominoRoom').forEach(function (button) {
+  button.onclick = function () {
+   socket.emit('dominoJoinTable', { roomId: button.dataset.id });
+  };
+ });
+});
+
+socket.on('dominoWaiting', function (data) {
+ toast('ველოდებით მოთამაშეებს ' + data.current + '/' + data.max);
+});
+
+socket.on('dominoError', function (message) {
+ toast('⚠️ ' + message);
+});
+
+socket.on('dominoDealAnimation', function () {
+ sfx('deal');
+});
+
+socket.on('dominoPlayFX', function () {
+ sfx('place');
+});
+
+/* ----- main state render ----- */
+
+socket.on('dominoStateUpdate', function (state) {
+ dominoCurrent = state;
+ dominoSelectedTile = null;
+
+ hide('auth');
+ hide('lobby');
+ hide('game');
+ show('dominoGame');
+
+ renderDomino();
+});
+
+function dominoMyIndex() {
+ return dominoCurrent.players.findIndex(function (p) { return p.id === dominoCurrent.viewerId; });
+}
+
+function renderDomino() {
+ if (!dominoCurrent) return;
+
+ el('dHudRound').textContent = dominoCurrent.roundIndex;
+ el('dHudTotalRounds').textContent = dominoCurrent.totalRounds;
+ el('dHudBoneyard').textContent = dominoCurrent.boneyardCount;
+
+ // seats
+ el('dominoSeats').innerHTML = dominoCurrent.players.map(function (player) {
+  return (
+   '<div class="dominoSeat' + (player.isCurrent ? ' active' : '') + '">' +
+    '<div class="avatar ' + frameClass(player.frame) + '">' + setAvatarHtml(player.avatar) + '</div>' +
+    '<div><b>' + esc(player.name) + '</b><br><small>' + player.tileCount + ' კამათელი · ქულა ' + player.matchScore + '</small></div>' +
+   '</div>'
+  );
+ }).join('');
+
+ // chain + end zones
+ var chainHtml = dominoCurrent.chain.map(function (t) {
+  return dominoTileHtml(t.left, t.right, false);
+ }).join('');
+
+ var myIndex = dominoMyIndex();
+ var myTurn = myIndex === dominoCurrent.currentTurnIndex && !dominoCurrent.processing && !dominoCurrent.gameOver;
+
+ var leftMatches = dominoSelectedTile && (dominoSelectedTile.a === dominoCurrent.leftEnd || dominoSelectedTile.b === dominoCurrent.leftEnd);
+ var rightMatches = dominoSelectedTile && (dominoSelectedTile.a === dominoCurrent.rightEnd || dominoSelectedTile.b === dominoCurrent.rightEnd);
+
+ var leftZone = '<div class="dEndZone' + (leftMatches ? ' highlight' : '') + '" id="dLeftZone">' + (dominoCurrent.leftEnd === null ? '' : dominoCurrent.leftEnd) + '</div>';
+ var rightZone = '<div class="dEndZone' + (rightMatches ? ' highlight' : '') + '" id="dRightZone">' + (dominoCurrent.rightEnd === null ? '' : dominoCurrent.rightEnd) + '</div>';
+
+ el('dominoChain').innerHTML = dominoCurrent.chain.length
+  ? (leftZone + chainHtml + rightZone)
+  : '<p style="color:#91a49d">დაფა ცარიელია — პირველი კამათელი შენია!</p>';
+
+ if (dominoCurrent.chain.length) {
+  el('dLeftZone').onclick = function () {
+   if (dominoSelectedTile && leftMatches) {
+    socket.emit('dominoPlayTile', { tileId: dominoSelectedTile.id, side: 'left' });
+    dominoSelectedTile = null;
+   }
+  };
+  el('dRightZone').onclick = function () {
+   if (dominoSelectedTile && rightMatches) {
+    socket.emit('dominoPlayTile', { tileId: dominoSelectedTile.id, side: 'right' });
+    dominoSelectedTile = null;
+   }
+  };
+ }
+
+ // hand
+ var myHand = (dominoCurrent.hands && dominoCurrent.hands[dominoCurrent.viewerId]) || [];
+
+ el('dominoHand').innerHTML = myHand.map(function (tile) {
+  var selected = dominoSelectedTile && dominoSelectedTile.id === tile.id;
+  return (
+   '<div class="dTileWrap" data-id="' + tile.id + '">' +
+    '<div class="dTile vertical' + (selected ? ' selected' : '') + '">' +
+     '<div class="dTile half">' + dominoHalfHtml(tile.a) + '</div>' +
+     '<div class="dTile half">' + dominoHalfHtml(tile.b) + '</div>' +
+    '</div>' +
+   '</div>'
+  );
+ }).join('');
+
+ document.querySelectorAll('#dominoHand .dTileWrap').forEach(function (wrap) {
+  wrap.onclick = function () {
+   if (!myTurn) return;
+
+   var tile = myHand.find(function (t) { return t.id === wrap.dataset.id; });
+   if (!tile) return;
+
+   if (!dominoCurrent.chain.length) {
+    socket.emit('dominoPlayTile', { tileId: tile.id, side: 'right' });
+    return;
+   }
+
+   var matchesLeft = tile.a === dominoCurrent.leftEnd || tile.b === dominoCurrent.leftEnd;
+   var matchesRight = tile.a === dominoCurrent.rightEnd || tile.b === dominoCurrent.rightEnd;
+
+   if (matchesLeft && matchesRight) {
+    dominoSelectedTile = (dominoSelectedTile && dominoSelectedTile.id === tile.id) ? null : tile;
+    renderDomino();
+   } else if (matchesLeft) {
+    socket.emit('dominoPlayTile', { tileId: tile.id, side: 'left' });
+   } else if (matchesRight) {
+    socket.emit('dominoPlayTile', { tileId: tile.id, side: 'right' });
+   } else {
+    toast('⚠️ ეს კამათელი ვერ ჩაერთვება დაფაზე');
+   }
+  };
+ });
+
+ // status
+ if (dominoCurrent.gameOver) {
+  el('dominoStatus').textContent = 'მატჩი დასრულდა';
+ } else if (myTurn) {
+  el('dominoStatus').textContent = 'შენი სვლაა — აირჩიე კამათელი';
+ } else {
+  var activeName = dominoCurrent.players[dominoCurrent.currentTurnIndex] && dominoCurrent.players[dominoCurrent.currentTurnIndex].name;
+  el('dominoStatus').textContent = (activeName || '') + ' თამაშობს...';
+ }
+
+ // score panel
+ el('dominoScorePanel').innerHTML = dominoCurrent.players.slice().sort(function (a, b) {
+  return b.matchScore - a.matchScore;
+ }).map(function (player) {
+  return '<div class="dominoScoreCard"><b>' + player.matchScore + '</b><small>' + esc(player.name) + '</small></div>';
+ }).join('');
+}
+
+socket.on('dominoRoundEnd', function (data) {
+ var reasonText = data.reason === 'out' ? 'გავიდა კამათლებით' : 'დაბლოკილი რაუნდი — ყველაზე დაბალი ჯამი';
+ toast('🁫 ' + data.winnerName + ' — ' + reasonText + ' (+' + data.awarded + ')');
+ sfx('cut');
+});
+
+socket.on('dominoFairnessReveal', function (data) {
+ fairnessHistory.unshift({ hand: 'დომინო რაუნდი ' + data.round, seed: data.seed, hash: data.hash });
+ fairnessHistory = fairnessHistory.slice(0, 10);
+});
+
+socket.on('dominoMatchEnd', function (data) {
+ toast('🏆 დომინოს გამარჯვებული: ' + data.winnerName);
+
+ if (dominoCurrent && data.winnerId === dominoCurrent.viewerId) {
+  sfx('win');
+  confettiBurst();
+ } else {
+  sfx('lose');
+ }
+});
+
+
+
+(function () {
+ var params =
+  new URLSearchParams(
+   window.location.search
+  );
+
+ var invite =
+  params.get('invite');
+
+ if (invite) {
+  pendingInvite = invite;
+ }
+})();
+
+
 
 var savedToken =
  localStorage.getItem(
