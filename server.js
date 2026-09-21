@@ -1503,7 +1503,8 @@ function setTurn(room, index) {
 function validatePlay(
   game,
   hand,
-  indexes
+  indexes,
+  minOtherHandSize
 ) {
   if (
     !Array.isArray(indexes) ||
@@ -1561,6 +1562,24 @@ function validatePlay(
         ok: false,
         message:
           'ერთად ჩამოსული კარტები ერთი მასტის უნდა იყოს.'
+      };
+    }
+
+    const isValidMaliutkaLead =
+      cards.length === 5 &&
+      isMaliutka(cards);
+
+    if (
+      !isValidMaliutkaLead &&
+      typeof minOtherHandSize === 'number' &&
+      cards.length > minOtherHandSize
+    ) {
+      return {
+        ok: false,
+        message:
+          'ამდენი კარტის პასუხის გაცემა ვერავინ შეძლებს ახლა — აირჩიე ' +
+          minOtherHandSize +
+          ' ან ნაკლები კარტი.'
       };
     }
 
@@ -1673,11 +1692,26 @@ function playCards(
     return false;
   }
 
+  const otherHandSizes =
+    room.players
+      .filter(function (item) {
+        return item.id !== player.id;
+      })
+      .map(function (item) {
+        return item.hand.length;
+      });
+
+  const minOtherHandSize =
+    otherHandSizes.length
+      ? Math.min.apply(null, otherHandSizes)
+      : 5;
+
   const validation =
     validatePlay(
       game,
       player.hand,
-      indexes
+      indexes,
+      minOtherHandSize
     );
 
   if (!validation.ok) {
@@ -1850,27 +1884,48 @@ function refillHands(
   const game = room.game;
 
   /*
-    Draw clockwise beginning with trick winner.
+    Draw ONE card at a time, round-robin, starting
+    with the trick winner. This keeps hand sizes as
+    even as possible (never more than 1 card apart)
+    even if the deck runs out mid-refill — filling
+    one player completely before moving to the next
+    would let hand sizes drift apart, which later
+    breaks multi-card tricks (a player left with
+    fewer cards than a lead's count can never legally
+    respond, freezing the hand).
   */
 
-  for (
-    let offset = 0;
-    offset < room.players.length;
-    offset++
-  ) {
-    const player =
-      room.players[
-        (startIndex + offset) %
-        room.players.length
-      ];
+  let stillNeeds = true;
 
-    while (
-      player.hand.length < 5 &&
-      game.deck.length
+  while (
+    stillNeeds &&
+    game.deck.length
+  ) {
+    stillNeeds = false;
+
+    for (
+      let offset = 0;
+      offset < room.players.length;
+      offset++
     ) {
-      player.hand.push(
-        game.deck.pop()
-      );
+      const player =
+        room.players[
+          (startIndex + offset) %
+          room.players.length
+        ];
+
+      if (
+        player.hand.length < 5 &&
+        game.deck.length
+      ) {
+        player.hand.push(
+          game.deck.pop()
+        );
+
+        if (player.hand.length < 5) {
+          stillNeeds = true;
+        }
+      }
     }
   }
 }
@@ -2760,6 +2815,20 @@ function botChoice(
   */
 
   if (!game.table.length) {
+    const otherHandSizes =
+      room.players
+        .filter(function (item) {
+          return item.id !== player.id;
+        })
+        .map(function (item) {
+          return item.hand.length;
+        });
+
+    const minOtherHandSize =
+      otherHandSizes.length
+        ? Math.min.apply(null, otherHandSizes)
+        : 5;
+
     const groups = {};
 
     player.hand.forEach(
@@ -2775,7 +2844,9 @@ function botChoice(
     );
 
     /*
-      Maliutka first.
+      Maliutka first (always safe: responders
+      simply play their whole remaining hand,
+      whatever its size).
     */
 
     const five =
@@ -2792,7 +2863,8 @@ function botChoice(
     }
 
     /*
-      Occasionally lead multi-card.
+      Occasionally lead multi-card — but never
+      more than every other player can match.
     */
 
     const multi =
@@ -2800,7 +2872,8 @@ function botChoice(
         .values(groups)
         .filter(function (group) {
           return (
-            group.length >= 2
+            group.length >= 2 &&
+            group.length <= minOtherHandSize
           );
         })
         .sort(function (a, b) {
@@ -2818,7 +2891,8 @@ function botChoice(
         0,
         Math.min(
           4,
-          multi[0].length
+          multi[0].length,
+          minOtherHandSize
         )
       );
     }
@@ -2882,6 +2956,63 @@ function botChoice(
     count,
     game.trump
   );
+}
+
+function forcePlayOrFallback(room, player) {
+  const played = playCards(
+    room,
+    player,
+    botChoice(room, player)
+  );
+
+  if (played) {
+    return;
+  }
+
+  /*
+    Defensive safety net: botChoice should always
+    return a legal play after the min-hand-size caps
+    above, but if some edge case still slips through,
+    never let the game stall forever on this turn —
+    fall back to the single safest discard, and if
+    even that is somehow rejected, force through the
+    player's very first card so the trick can proceed.
+  */
+
+  const game = room.game;
+
+  if (!game || game.gameOver) {
+    return;
+  }
+
+  const required =
+    !game.table.length
+      ? 1
+      : (game.leadMaliutka ? player.hand.length : (game.leadCount || 1));
+
+  const fallbackIndexes =
+    lowestDiscard(
+      player.hand,
+      Math.min(required, player.hand.length),
+      game.trump
+    );
+
+  const fallbackPlayed =
+    playCards(room, player, fallbackIndexes);
+
+  if (!fallbackPlayed && player.hand.length) {
+    console.error(
+      '[BURA] forced fallback play failed for room',
+      room.id,
+      '— pushing single card to avoid a stalled game'
+    );
+
+    playCards(
+      room,
+      player,
+      [0]
+    );
+  }
 }
 
 function scheduleBot(room) {
@@ -2948,14 +3079,7 @@ function scheduleBot(room) {
         return;
       }
 
-      playCards(
-        room,
-        player,
-        botChoice(
-          room,
-          player
-        )
-      );
+      forcePlayOrFallback(room, player);
     }, rand(1200, 1800));
 }
 
@@ -2978,14 +3102,7 @@ function autoPlay(room) {
     return;
   }
 
-  playCards(
-    room,
-    player,
-    botChoice(
-      room,
-      player
-    )
-  );
+  forcePlayOrFallback(room, player);
 }
 
 /* ============================================================
@@ -3955,6 +4072,111 @@ io.on(
       }
     );
 
+    /* ---------------- LEAVE TABLE ---------------- */
+
+    socket.on(
+      'leaveTable',
+      function () {
+        const room =
+          rooms.get(
+            socket.data.roomId
+          );
+
+        if (!room) {
+          socket.emit('leftTable');
+          return;
+        }
+
+        const player =
+          room.players.find(
+            function (item) {
+              return (
+                item.id ===
+                socket.data.playerId
+              );
+            }
+          );
+
+        const user =
+          users.get(
+            socket.data.userId
+          );
+
+        socket.leave(room.id);
+
+        socket.data.roomId = null;
+        socket.data.playerId = null;
+
+        if (user) {
+          user.roomId = null;
+        }
+
+        if (!player) {
+          socket.emit('leftTable');
+          return;
+        }
+
+        if (
+          player.reconnectTimer
+        ) {
+          clearTimeout(
+            player.reconnectTimer
+          );
+
+          player.reconnectTimer = null;
+        }
+
+        if (
+          room.game &&
+          !room.game.gameOver
+        ) {
+          /*
+            Game already in progress: hand off to
+            a bot immediately so the other players
+            aren't left waiting, instead of the usual
+            30-second reconnect grace period.
+          */
+
+          player.connected = false;
+          player.socketId = null;
+          player.isBot = true;
+
+          if (
+            !player.name.includes('🤖')
+          ) {
+            player.name += ' 🤖';
+          }
+
+          player.avatar = '🤖';
+
+          if (
+            room.players[room.game.current] ===
+            player
+          ) {
+            scheduleBot(room);
+          }
+
+          broadcastGame(room);
+        } else {
+          const index =
+            room.players.indexOf(player);
+
+          if (index >= 0) {
+            room.players.splice(index, 1);
+          }
+
+          if (room.players.length === 0) {
+            cleanupRoom(room);
+            rooms.delete(room.id);
+          }
+
+          broadcastLobby();
+        }
+
+        socket.emit('leftTable');
+      }
+    );
+
     /* ---------------- TOURNAMENT ---------------- */
 
     socket.on(
@@ -4353,6 +4575,60 @@ io.on(
       }
 
       dominoPlaceTile(room, player, data.tileId, data.side);
+    });
+
+    socket.on('dominoLeaveTable', function () {
+      const room = dominoRooms.get(socket.data.dominoRoomId);
+
+      if (!room) {
+        socket.emit('dominoLeftTable');
+        return;
+      }
+
+      const player = room.players.find((p) => p.id === socket.data.dominoPlayerId);
+
+      socket.leave('domino:' + room.id);
+      socket.data.dominoRoomId = null;
+      socket.data.dominoPlayerId = null;
+
+      if (!player) {
+        socket.emit('dominoLeftTable');
+        return;
+      }
+
+      if (player.reconnectTimer) {
+        clearTimeout(player.reconnectTimer);
+        player.reconnectTimer = null;
+      }
+
+      if (room.game && !room.game.gameOver) {
+        player.connected = false;
+        player.socketId = null;
+        player.isBot = true;
+
+        if (!player.name.includes('🤖')) {
+          player.name += ' 🤖';
+        }
+        player.avatar = '🤖';
+
+        if (room.players[room.game.current] === player) {
+          scheduleDominoBot(room);
+        }
+
+        broadcastDominoGame(room);
+      } else {
+        const index = room.players.indexOf(player);
+        if (index >= 0) room.players.splice(index, 1);
+
+        if (room.players.length === 0) {
+          dominoCleanupRoom(room);
+          dominoRooms.delete(room.id);
+        }
+
+        broadcastDominoLobby();
+      }
+
+      socket.emit('dominoLeftTable');
     });
 
     /* ---------------- DISCONNECT ---------------- */
@@ -5264,6 +5540,117 @@ button{cursor:pointer}
  margin:35px auto
 }
 
+.authGrid{
+ display:grid;
+ grid-template-columns:1.05fr 1fr;
+ gap:26px;
+ width:min(1000px,94vw);
+ margin:6vh auto;
+ align-items:stretch
+}
+
+.authHero{
+ border-radius:28px;
+ padding:40px 34px;
+ display:flex;
+ flex-direction:column;
+ justify-content:center;
+ position:relative;
+ overflow:hidden;
+ background:
+  radial-gradient(circle at 20% 15%,rgba(229,189,97,.14),transparent 45%),
+  radial-gradient(circle at 85% 85%,rgba(27,166,109,.16),transparent 50%),
+  linear-gradient(160deg,#0c1e18,#071410 60%,#050b09)
+}
+
+.authHero:before{
+ content:"";
+ position:absolute;
+ inset:0;
+ background-image:
+  repeating-linear-gradient(120deg,rgba(255,255,255,.025) 0 2px,transparent 2px 26px);
+ pointer-events:none
+}
+
+.authHeroTitle{
+ font-size:38px;
+ font-weight:900;
+ letter-spacing:.5px;
+ line-height:1.15;
+ margin-bottom:6px
+}
+
+.authHeroTitle span{
+ color:var(--gold);
+ display:block;
+ font-size:44px;
+ text-shadow:0 0 30px rgba(229,189,97,.35)
+}
+
+.authTagline{
+ color:var(--muted);
+ font-size:15px;
+ margin:10px 0 30px
+}
+
+.heroCards{
+ display:flex;
+ gap:14px;
+ margin-bottom:32px
+}
+
+.heroCard{
+ width:56px;
+ height:78px;
+ border-radius:11px;
+ display:grid;
+ place-items:center;
+ font-size:26px;
+ font-weight:900;
+ background:linear-gradient(145deg,#fff,#eae4d5);
+ box-shadow:0 14px 30px rgba(0,0,0,.45);
+ animation:heroFloat 4.5s ease-in-out infinite;
+ transform:translateY(0)
+}
+
+.heroCard:nth-child(1){color:#111;animation-delay:0s}
+.heroCard:nth-child(2){color:#e63946;animation-delay:.3s}
+.heroCard:nth-child(3){color:#0077b6;animation-delay:.6s}
+.heroCard:nth-child(4){color:#2a9d8f;animation-delay:.9s}
+
+@keyframes heroFloat{
+ 0%,100%{transform:translateY(0) rotate(-2deg)}
+ 50%{transform:translateY(-14px) rotate(2deg)}
+}
+
+.authFeatures{
+ list-style:none;
+ padding:0;
+ margin:0;
+ display:flex;
+ flex-direction:column;
+ gap:14px
+}
+
+.authFeatures li{
+ display:flex;
+ align-items:center;
+ gap:12px;
+ font-size:14.5px;
+ color:#dce7e1
+}
+
+.authFeatures li b{
+ width:38px;
+ height:38px;
+ border-radius:11px;
+ display:grid;
+ place-items:center;
+ font-size:18px;
+ background:rgba(229,189,97,.12);
+ flex:none
+}
+
 .brand{
  font-size:30px;
  font-weight:900;
@@ -5273,16 +5660,25 @@ button{cursor:pointer}
 .brand span{color:var(--gold)}
 
 .authbox{
- width:min(520px,100%);
- margin:10vh auto;
- padding:28px;
- border-radius:28px
+ width:100%;
+ padding:34px;
+ border-radius:28px;
+ display:flex;
+ flex-direction:column;
+ justify-content:center
+}
+
+.authbox .brand{
+ display:none
 }
 
 .tabs{
  display:flex;
  gap:8px;
- margin:20px 0
+ margin:20px 0;
+ background:rgba(0,0,0,.22);
+ padding:5px;
+ border-radius:14px
 }
 
 .tabs button,
@@ -5291,22 +5687,75 @@ button{cursor:pointer}
  background:#10231d;
  color:white;
  border-radius:12px;
- padding:10px 15px
+ padding:10px 15px;
+ transition:.18s background,.18s transform,.18s box-shadow
+}
+
+.smallBtn:hover{
+ transform:translateY(-1px);
+ box-shadow:0 6px 16px rgba(0,0,0,.3)
+}
+
+.leaveBtn{
+ background:rgba(124,23,37,.35)!important;
+ border-color:rgba(224,97,111,.5)!important;
+ color:#ffd6da!important
+}
+
+.leaveBtn:hover{
+ background:rgba(124,23,37,.55)!important
+}
+
+.tabs button{
+ flex:1;
+ border:0;
+ background:transparent;
+ font-weight:700;
+ color:var(--muted)
 }
 
 .tabs button.active{
- background:var(--gold);
- color:#15100a
+ background:linear-gradient(135deg,#e8c76e,#a87523);
+ color:#15100a;
+ box-shadow:0 6px 18px rgba(229,189,97,.3)
+}
+
+.fieldWrap{
+ position:relative;
+ margin:9px 0
+}
+
+.fieldWrap .fieldIcon{
+ position:absolute;
+ left:14px;
+ top:50%;
+ transform:translateY(-50%);
+ opacity:.55;
+ pointer-events:none;
+ font-size:15px
+}
+
+.fieldWrap .field{
+ padding-left:38px;
+ margin:0
 }
 
 .field{
  width:100%;
- padding:13px;
+ padding:14px;
  margin:7px 0;
  border-radius:13px;
  border:1px solid #29443a;
  background:#081612;
- color:white
+ color:white;
+ transition:.18s border-color,.18s box-shadow,.18s background
+}
+
+.field:focus{
+ outline:none;
+ border-color:var(--gold);
+ box-shadow:0 0 0 3px rgba(229,189,97,.15);
+ background:#0a1a15
 }
 
 .primary{
@@ -5319,11 +5768,22 @@ button{cursor:pointer}
   );
  color:#171006;
  font-weight:900;
- padding:13px 18px;
+ padding:14px 18px;
  border-radius:14px;
  box-shadow:
   0 8px 25px
-  rgba(229,189,97,.22)
+  rgba(229,189,97,.22);
+ transition:.18s transform,.18s box-shadow;
+ width:100%
+}
+
+.primary:hover{
+ transform:translateY(-2px);
+ box-shadow:0 12px 32px rgba(229,189,97,.35)
+}
+
+.primary:active{
+ transform:translateY(0)
 }
 
 .avatarChoices{
@@ -5339,11 +5799,32 @@ button{cursor:pointer}
  border:2px solid transparent;
  border-radius:50%;
  width:48px;
- height:48px
+ height:48px;
+ transition:.15s transform,.15s border-color
+}
+
+.avatarChoice:hover{
+ transform:scale(1.1)
 }
 
 .avatarChoice.on{
- border-color:var(--gold)
+ border-color:var(--gold);
+ box-shadow:0 0 14px rgba(229,189,97,.5)
+}
+
+@media(max-width:850px){
+ .authGrid{
+  grid-template-columns:1fr;
+  margin:3vh auto
+ }
+ .authHero{
+  display:none
+ }
+ .authbox .brand{
+  display:block;
+  text-align:center;
+  margin-bottom:4px
+ }
 }
 
 .top{
@@ -5395,7 +5876,8 @@ button{cursor:pointer}
 
 .panel{
  padding:18px;
- border-radius:22px
+ border-radius:22px;
+ transition:.2s box-shadow
 }
 
 .tableRow,
@@ -5404,10 +5886,18 @@ button{cursor:pointer}
  align-items:center;
  justify-content:space-between;
  gap:12px;
- padding:12px;
+ padding:14px 10px;
  border-bottom:
   1px solid
-  rgba(255,255,255,.08)
+  rgba(255,255,255,.08);
+ border-radius:14px;
+ transition:.18s background,.18s transform
+}
+
+.tableRow:hover,
+.tourRow:hover{
+ background:rgba(255,255,255,.04);
+ transform:translateX(2px)
 }
 
 .stakes{
@@ -5421,33 +5911,49 @@ button{cursor:pointer}
  border-radius:12px;
  background:#10231d;
  color:white;
- border:1px solid #315247
+ border:1px solid #315247;
+ transition:.16s transform,.16s box-shadow,.16s background
+}
+
+.stake:hover{
+ transform:translateY(-2px)
 }
 
 .stake.on{
- background:var(--gold);
- color:#181108
+ background:linear-gradient(135deg,#f0ce73,#a87826);
+ color:#181108;
+ border-color:transparent;
+ box-shadow:0 6px 18px rgba(229,189,97,.35)
 }
 
 .quest{
- padding:10px;
- background:rgba(0,0,0,.18);
- border-radius:12px;
- margin:8px 0
+ padding:12px;
+ background:rgba(0,0,0,.2);
+ border-radius:14px;
+ margin:8px 0;
+ border:1px solid rgba(255,255,255,.05);
+ transition:.18s background
+}
+
+.quest:hover{
+ background:rgba(0,0,0,.28)
 }
 
 .progress{
- height:7px;
+ height:8px;
  background:#172720;
  border-radius:10px;
  overflow:hidden;
- margin-top:6px
+ margin-top:8px;
+ box-shadow:inset 0 1px 3px rgba(0,0,0,.4)
 }
 
 .progress i{
  display:block;
  height:100%;
- background:var(--gold)
+ background:linear-gradient(90deg,#c9970f,#ffe27a);
+ transition:width .4s ease;
+ box-shadow:0 0 8px rgba(229,189,97,.5)
 }
 
 .error{
@@ -5473,17 +5979,25 @@ button{cursor:pointer}
 }
 
 .pill{
- padding:8px 13px;
+ padding:9px 15px;
  border-radius:999px;
- background:rgba(6,18,15,.72);
+ background:
+  linear-gradient(180deg,rgba(20,38,32,.85),rgba(6,18,15,.85));
  border:
   1px solid
-  rgba(255,255,255,.13);
+  rgba(255,255,255,.14);
  box-shadow:
-  0 6px 22px #0006
+  0 6px 22px #0006,
+  inset 0 1px 0 rgba(255,255,255,.06);
+ backdrop-filter:blur(10px);
+ font-size:13px;
+ letter-spacing:.2px
 }
 
-.pill b{color:var(--gold)}
+.pill b{
+ color:var(--gold);
+ text-shadow:0 0 12px rgba(229,189,97,.4)
+}
 
 .gameButtons{
  position:absolute;
@@ -5811,14 +6325,16 @@ button{cursor:pointer}
  width:70px;
  height:70px;
  border-radius:50%;
- background:#17251f;
+ background:
+  radial-gradient(circle at 35% 30%,#233830,#141f1a 70%);
  border:3px solid #d4a944;
  display:grid;
  place-items:center;
  font-size:34px;
  overflow:hidden;
  box-shadow:
-  0 7px 20px #0008;
+  0 7px 20px #0008,
+  inset 0 2px 6px rgba(255,255,255,.08);
  transition:.25s
 }
 
@@ -5841,24 +6357,30 @@ button{cursor:pointer}
  font-weight:900;
  text-shadow:
   0 2px 5px #000;
- margin-top:4px
+ margin-top:6px;
+ display:inline-block;
+ padding:2px 9px;
+ border-radius:10px;
+ background:rgba(0,0,0,.28)
 }
 
 .seatMeta{
  font-size:11px;
- color:#d7d9cf
+ color:#d7d9cf;
+ margin-top:2px
 }
 
 .levelBadge{
  position:absolute;
  right:-5px;
  bottom:2px;
- background:var(--gold);
+ background:linear-gradient(135deg,#f0ce73,#a87826);
  color:#1a1208;
  border-radius:20px;
  padding:3px 7px;
  font-size:10px;
- font-weight:900
+ font-weight:900;
+ box-shadow:0 3px 8px rgba(0,0,0,.4)
 }
 
 .timerRing{
@@ -6117,11 +6639,10 @@ button{cursor:pointer}
 .projectile{
  position:fixed;
  z-index:999;
- font-size:35px;
+ font-size:40px;
  pointer-events:none;
- transition:
-  transform .7s
-  cubic-bezier(.2,.7,.2,1)
+ filter:drop-shadow(0 10px 12px rgba(0,0,0,.5));
+ will-change:transform
 }
 
 .splat{
@@ -6129,24 +6650,56 @@ button{cursor:pointer}
  inset:0;
  display:grid;
  place-items:center;
- font-size:48px;
+ font-size:56px;
  z-index:50;
  pointer-events:none;
  animation:
-  splat .25s ease
+  splat .4s cubic-bezier(.22,1.6,.36,1)
 }
 
 @keyframes splat{
- from{
+ 0%{
   transform:
-   scale(.2)
-   rotate(-40deg)
+   scale(.15)
+   rotate(-50deg);
+  opacity:0
  }
- to{
+ 55%{
+  transform:
+   scale(1.35)
+   rotate(8deg);
+  opacity:1
+ }
+ 100%{
   transform:
    scale(1)
-   rotate(0)
+   rotate(0);
+  opacity:1
  }
+}
+
+.throwParticle{
+ position:fixed;
+ z-index:998;
+ border-radius:50%;
+ pointer-events:none;
+ transform:translate(0,0) scale(1);
+ opacity:1;
+ transition:
+  transform .6s cubic-bezier(.19,1,.22,1),
+  opacity .6s ease
+}
+
+.avatarHit{
+ animation:avatarHitShake .4s ease
+}
+
+@keyframes avatarHitShake{
+ 0%,100%{transform:translate(0,0) rotate(0)}
+ 20%{transform:translate(-4px,2px) rotate(-6deg)}
+ 40%{transform:translate(4px,-2px) rotate(6deg)}
+ 60%{transform:translate(-3px,1px) rotate(-4deg)}
+ 80%{transform:translate(3px,-1px) rotate(4deg)}
 }
 
 .toast{
@@ -6737,80 +7290,112 @@ button{cursor:pointer}
 <div class="bg"></div>
 
 <section id="auth">
- <div class="authbox glass">
+ <div class="authGrid">
 
-  <div class="brand">
-   WRITTEN <span>BURA</span>
+  <div class="authHero glass">
+   <div class="authHeroTitle">
+    WRITTEN
+    <span>BURA</span>
+   </div>
+
+   <p class="authTagline">
+    წერითი ბურა · ონლაინ მაგიდა · ცოცხალი მოწინააღმდეგეები
+   </p>
+
+   <div class="heroCards">
+    <div class="heroCard">♠</div>
+    <div class="heroCard">♥</div>
+    <div class="heroCard">♦</div>
+    <div class="heroCard">♣</div>
+   </div>
+
+   <ul class="authFeatures">
+    <li><b>🔒</b> Provably Fair — გასაშლელი, გადამოწმებადი არევა</li>
+    <li><b>🏆</b> რეიტინგი, ლიდერბორდი და დღიური დავალებები</li>
+    <li><b>🎁</b> დღიური ბონუსები და კოსმეტიკური მაღაზია</li>
+    <li><b>🁫</b> ბურა + დომინო ერთ პლატფორმაზე</li>
+   </ul>
   </div>
 
-  <p style="color:#9eb1aa">
-   წერითი ბურა · ონლაინ მაგიდა
-  </p>
+  <div class="authbox glass">
 
-  <div class="tabs">
+   <div class="brand">
+    WRITTEN <span>BURA</span>
+   </div>
+
+   <div class="tabs">
+    <button
+     id="loginTab"
+     class="active">
+     შესვლა
+    </button>
+
+    <button id="registerTab">
+     რეგისტრაცია
+    </button>
+   </div>
+
+   <div class="fieldWrap">
+    <span class="fieldIcon">👤</span>
+    <input
+     id="username"
+     class="field"
+     placeholder="Username"
+     value="saba123">
+   </div>
+
+   <div class="fieldWrap">
+    <span class="fieldIcon">🔑</span>
+    <input
+     id="password"
+     class="field"
+     type="password"
+     placeholder="Password">
+   </div>
+
+   <div
+    id="avatarBox"
+    class="hidden">
+
+    <small>
+     აირჩიე ავატარი
+    </small>
+
+    <div class="avatarChoices">
+     <button class="avatarChoice on">🦊</button>
+     <button class="avatarChoice">😎</button>
+     <button class="avatarChoice">🦁</button>
+     <button class="avatarChoice">🐺</button>
+     <button class="avatarChoice">👑</button>
+     <button class="avatarChoice">🧙</button>
+    </div>
+
+    <input
+     id="avatarFile"
+     class="field"
+     type="file"
+     accept="image/png,image/jpeg,image/webp">
+   </div>
+
+   <div
+    id="authError"
+    class="error">
+   </div>
+
    <button
-    id="loginTab"
-    class="active">
+    id="authBtn"
+    class="primary">
     შესვლა
    </button>
 
-   <button id="registerTab">
-    რეგისტრაცია
+   <button
+    id="testerBtn"
+    class="smallBtn"
+    style="width:100%;margin-top:10px;text-align:center">
+    🧪 saba123 TEST MODE
    </button>
+
   </div>
-
-  <input
-   id="username"
-   class="field"
-   placeholder="Username"
-   value="saba123">
-
-  <input
-   id="password"
-   class="field"
-   type="password"
-   placeholder="Password">
-
-  <div
-   id="avatarBox"
-   class="hidden">
-
-   <small>
-    აირჩიე ავატარი
-   </small>
-
-   <div class="avatarChoices">
-    <button class="avatarChoice on">🦊</button>
-    <button class="avatarChoice">😎</button>
-    <button class="avatarChoice">🦁</button>
-    <button class="avatarChoice">🐺</button>
-    <button class="avatarChoice">👑</button>
-    <button class="avatarChoice">🧙</button>
-   </div>
-
-   <input
-    id="avatarFile"
-    class="field"
-    type="file"
-    accept="image/png,image/jpeg,image/webp">
-  </div>
-
-  <div
-   id="authError"
-   class="error">
-  </div>
-
-  <button
-   id="authBtn"
-   class="primary">
-   შესვლა
-  </button>
-
-  <button
-   id="testerBtn"
-   class="smallBtn">
-   🧪 saba123 TEST MODE
-  </button>
 
  </div>
 </section>
@@ -7099,6 +7684,12 @@ button{cursor:pointer}
     value="100">
   </div>
 
+  <button
+   id="leaveBtn"
+   class="smallBtn leaveBtn">
+   🚪 გამოსვლა
+  </button>
+
  </div>
 
  <div class="arena">
@@ -7203,6 +7794,7 @@ button{cursor:pointer}
  <div class="dominoHud">
   <div class="pill">🁫 რაუნდი <b id="dHudRound">1</b>/<b id="dHudTotalRounds">1</b></div>
   <div class="pill">🪨 ბანკი <b id="dHudBoneyard">0</b></div>
+  <button id="dominoLeaveBtn" class="smallBtn leaveBtn">🚪 გამოსვლა</button>
  </div>
 
  <div class="arena">
@@ -9136,8 +9728,7 @@ function selectionValid() {
  if (
   !current.table.length
  ) {
-  return (
-   cards.length <= 5 &&
+  var sameSuitOk =
    cards.every(
     function (card) {
      return (
@@ -9145,7 +9736,45 @@ function selectionValid() {
       cards[0].suit
      );
     }
-   )
+   );
+
+  var isMaliutkaLead =
+   cards.length === 5 &&
+   sameSuitOk;
+
+  if (!isMaliutkaLead) {
+   var otherCounts =
+    current.players
+     .filter(
+      function (player) {
+       return (
+        player.id !==
+        current.viewerId
+       );
+      }
+     )
+     .map(
+      function (player) {
+       return player.cardCount;
+      }
+     );
+
+   var minOtherCount =
+    otherCounts.length
+     ? Math.min.apply(
+        null,
+        otherCounts
+       )
+     : 5;
+
+   if (cards.length > minOtherCount) {
+    return false;
+   }
+  }
+
+  return (
+   cards.length <= 5 &&
+   sameSuitOk
   );
  }
 
@@ -9495,6 +10124,31 @@ el('muteBtn').onclick =
     : '🔊';
  };
 
+el('leaveBtn').onclick =
+ function () {
+  if (
+   !confirm(
+    'დარწმუნებული ხარ, რომ გინდა მაგიდის დატოვება? ' +
+    'თუ თამაში მიმდინარეობს, შენს ადგილს ბოტი ჩაანაცვლებს.'
+   )
+  ) {
+   return;
+  }
+
+  socket.emit('leaveTable');
+ };
+
+socket.on('leftTable', function () {
+ current = null;
+ selected = [];
+
+ hide('game');
+ hide('dominoGame');
+ show('lobby');
+
+ renderProfile();
+});
+
 el('volumeSlider').oninput =
  function () {
   volume =
@@ -9811,203 +10465,186 @@ function seatAvatar(playerId) {
   );
 }
 
-function animateThrowable(data) {
- var from =
-  seatAvatar(
-   data.fromPlayerId
-  );
+function screenShake(strength) {
+ var stage =
+  document.querySelector(
+   '.arena'
+  ) || document.body;
 
- var to =
-  seatAvatar(
-   data.targetPlayerId
-  );
+ var amount =
+  strength || 10;
 
- if (
-  !from ||
-  !to
- ) {
-  return;
+ var frames = [
+  { transform:'translate(0,0)' },
+  { transform:'translate(' + amount + 'px,' + (amount * -0.6) + 'px)' },
+  { transform:'translate(' + (-amount * 0.8) + 'px,' + (amount * 0.5) + 'px)' },
+  { transform:'translate(' + (amount * 0.5) + 'px,' + (-amount * 0.3) + 'px)' },
+  { transform:'translate(0,0)' }
+ ];
+
+ try {
+  stage.animate(
+   frames,
+   { duration:380, easing:'cubic-bezier(.36,.07,.19,.97)' }
+  );
+ } catch (error) {}
+}
+
+function spawnParticles(x, y, colors, count) {
+ for (var i = 0; i < (count || 14); i++) {
+  var particle =
+   document.createElement(
+    'div'
+   );
+
+  particle.className =
+   'throwParticle';
+
+  var angle =
+   (Math.PI * 2 * i) / count +
+   Math.random() * 0.6;
+
+  var distance =
+   30 + Math.random() * 55;
+
+  var size =
+   4 + Math.random() * 7;
+
+  particle.style.left = x + 'px';
+  particle.style.top = y + 'px';
+  particle.style.width = size + 'px';
+  particle.style.height = size + 'px';
+  particle.style.background =
+   colors[
+    Math.floor(Math.random() * colors.length)
+   ];
+
+  document.body.appendChild(particle);
+
+  var tx = Math.cos(angle) * distance;
+  var ty = Math.sin(angle) * distance - 12;
+
+  requestAnimationFrame(function (node, tx, ty) {
+   return function () {
+    node.style.transform =
+     'translate(' + tx + 'px,' + ty + 'px) scale(0)';
+    node.style.opacity = '0';
+   };
+  }(particle, tx, ty));
+
+  setTimeout(function (node) {
+   return function () { node.remove(); };
+  }(particle), 620);
  }
+}
 
- var start =
-  from.getBoundingClientRect();
+var THROW_COLORS = {
+ tomato:['#e63946','#ff6b6b','#8a1f2b'],
+ egg:['#fff4d6','#ffe27a','#c9a227'],
+ paper:['#f5f5f0','#dcdcd2'],
+ bomb:['#2b2b2b','#555','#ff8a3d','#ffd75e'],
+ beer:['#f0b429','#fff4d6','#7a5218'],
+ ice:['#bdeeff','#e8fbff','#66c9e8'],
+ rose:['#e63946','#ff8fa3','#2a9d8f']
+};
 
- var end =
-  to.getBoundingClientRect();
+function animateThrowable(data) {
+ var from = seatAvatar(data.fromPlayerId);
+ var to = seatAvatar(data.targetPlayerId);
+
+ if (!from || !to) return;
+
+ var start = from.getBoundingClientRect();
+ var end = to.getBoundingClientRect();
 
  var icons = {
-  tomato:'🍅',
-  egg:'🥚',
-  paper:'🧻',
-  bomb:'💣',
-  beer:'🍺',
-  ice:'❄️',
-  rose:'🌹'
+  tomato:'🍅', egg:'🥚', paper:'🧻',
+  bomb:'💣', beer:'🍺', ice:'❄️', rose:'🌹'
  };
 
- var projectile =
-  document.createElement(
-   'div'
-  );
+ var startX = start.left + start.width / 2;
+ var startY = start.top + start.height / 2;
+ var endX = end.left + end.width / 2;
+ var endY = end.top + end.height / 2;
 
- projectile.className =
-  'projectile';
+ var projectile = document.createElement('div');
+ projectile.className = 'projectile';
+ projectile.textContent = icons[data.type] || '🍅';
+ projectile.style.left = startX + 'px';
+ projectile.style.top = startY + 'px';
+ document.body.appendChild(projectile);
 
- projectile.textContent =
-  icons[data.type] ||
-  '🍅';
+ var dx = endX - startX;
+ var dy = endY - startY;
+ var arcHeight = Math.max(90, Math.abs(dx) * 0.35);
 
- projectile.style.left =
-  (
-   start.left +
-   start.width / 2
-  ) +
-  'px';
+ var startTime = null;
+ var duration = 620;
 
- projectile.style.top =
-  (
-   start.top +
-   start.height / 2
-  ) +
-  'px';
+ function step(timestamp) {
+  if (!startTime) startTime = timestamp;
+  var elapsed = timestamp - startTime;
+  var t = Math.min(1, elapsed / duration);
 
- document.body.appendChild(
-  projectile
- );
+  var x = dx * t;
+  var y = dy * t - Math.sin(t * Math.PI) * arcHeight;
+  var scale = 1 + Math.sin(t * Math.PI) * 0.25;
+  var rotate = t * 520;
 
- var dx =
-  end.left -
-  start.left;
+  projectile.style.transform =
+   'translate3d(' + x + 'px,' + y + 'px,0) ' +
+   'scale(' + scale + ') rotate(' + rotate + 'deg)';
 
- var dy =
-  end.top -
-  start.top;
-
- requestAnimationFrame(
-  function () {
-   projectile.style.transform =
-    'translate3d(' +
-    dx +
-    'px,' +
-    (dy - 50) +
-    'px,0) rotate(360deg)';
-
-   setTimeout(
-    function () {
-     projectile.style.transition =
-      'transform .18s ease-in';
-
-     projectile.style.transform =
-      'translate3d(' +
-      dx +
-      'px,' +
-      dy +
-      'px,0) rotate(450deg)';
-    },
-    520
-   );
+  if (t < 1) {
+   requestAnimationFrame(step);
+  } else {
+   impact();
   }
- );
+ }
 
- setTimeout(
-  function () {
-   projectile.remove();
+ requestAnimationFrame(step);
 
-   var splat =
-    document.createElement(
-     'div'
-    );
+ function impact() {
+  projectile.remove();
 
-   splat.className =
-    'splat';
+  var splat = document.createElement('div');
+  splat.className = 'splat';
 
-   var splatIcons = {
-    tomato:'💥🍅',
-    egg:'🍳',
-    paper:'🧻',
-    bomb:'💥',
-    beer:'🍻',
-    ice:'🧊',
-    rose:'🌹'
-   };
+  var splatIcons = {
+   tomato:'💥🍅', egg:'🍳', paper:'🧻',
+   bomb:'💥', beer:'🍻', ice:'🧊', rose:'🌹'
+  };
 
-   splat.textContent =
-    splatIcons[data.type] ||
-    '💥';
+  splat.textContent = splatIcons[data.type] || '💥';
+  to.parentElement.appendChild(splat);
 
-   to.parentElement
-    .appendChild(
-     splat
-    );
+  spawnParticles(endX, endY, THROW_COLORS[data.type] || THROW_COLORS.tomato, data.type === 'bomb' ? 22 : 14);
 
-   if (data.type === 'bomb') {
-    tone(
-     90,.22,
-     'sawtooth',
-     .07
-    );
+  var avatarRing = to;
+  if (avatarRing) {
+   avatarRing.classList.add('avatarHit');
+   setTimeout(function () { avatarRing.classList.remove('avatarHit'); }, 420);
+  }
 
-    tone(
-     55,.3,
-     'square',
-     .05,.05
-    );
-   } else if (
-    data.type === 'ice'
-   ) {
-    tone(
-     1200,.08,
-     'sine',
-     .04
-    );
+  screenShake(data.type === 'bomb' ? 16 : 7);
 
-    tone(
-     1500,.08,
-     'sine',
-     .03,.06
-    );
-   } else if (
-    data.type === 'beer'
-   ) {
-    tone(
-     180,.14,
-     'triangle',
-     .05
-    );
-   } else if (
-    data.type === 'rose'
-   ) {
-    tone(
-     700,.14,
-     'sine',
-     .04
-    );
+  if (data.type === 'bomb') {
+   tone(90, .22, 'sawtooth', .07);
+   tone(55, .3, 'square', .05, .05);
+  } else if (data.type === 'ice') {
+   tone(1200, .08, 'sine', .04);
+   tone(1500, .08, 'sine', .03, .06);
+  } else if (data.type === 'beer') {
+   tone(180, .14, 'triangle', .05);
+  } else if (data.type === 'rose') {
+   tone(700, .14, 'sine', .04);
+   tone(880, .16, 'sine', .03, .08);
+  } else {
+   tone(data.type === 'egg' ? 230 : 150, .12, 'triangle', .05);
+  }
 
-    tone(
-     880,.16,
-     'sine',
-     .03,.08
-    );
-   } else {
-    tone(
-     data.type === 'egg'
-      ? 230
-      : 150,
-     .12,
-     'triangle',
-     .05
-    );
-   }
-
-   setTimeout(
-    function () {
-     splat.remove();
-    },
-    3000
-   );
-  },
-  720
- );
+  setTimeout(function () { splat.remove(); }, 1400);
+ }
 }
 
 /* ============================================================
@@ -11038,6 +11675,26 @@ el('modeDominoTab').onclick = function () {
  hide('buraLobbyPanels');
  show('dominoLobbyPanels');
 };
+
+/* ----- leave table ----- */
+
+el('dominoLeaveBtn').onclick = function () {
+ if (!confirm('დარწმუნებული ხარ, რომ გინდა მაგიდის დატოვება? თუ თამაში მიმდინარეობს, შენს ადგილს ბოტი ჩაანაცვლებს.')) {
+  return;
+ }
+ socket.emit('dominoLeaveTable');
+};
+
+socket.on('dominoLeftTable', function () {
+ dominoCurrent = null;
+ dominoSelectedTile = null;
+
+ hide('game');
+ hide('dominoGame');
+ show('lobby');
+
+ renderProfile();
+});
 
 /* ----- create / join ----- */
 
